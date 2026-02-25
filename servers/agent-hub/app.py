@@ -2,24 +2,24 @@ import asyncio
 import json
 import os
 import subprocess
-import time
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, Body, FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from google.adk.agents import Agent as GoogleAgent
 from google.adk.runners import Runner as GoogleRunner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService as GoogleInMemorySessionService
 from google.adk.tools.mcp_tool import MCPToolset as GoogleMCPToolset
 from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams as GoogleStreamableHTTPConnectionParams
 from google.genai import types
+import httpx
 
 load_dotenv()
 
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:3002/mcp")
+CONVERSATION_HUB_URL = os.getenv("CONVERSATION_HUB_URL", "http://localhost:3300")
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "todea")
 KUBE_SECRET_NAME = os.getenv("KUBE_SECRET_NAME", "todea-api-keys")
 
@@ -57,6 +57,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Models ---------------------------------------------------------------------
+
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
@@ -67,6 +70,7 @@ class ChatResponse(BaseModel):
     content: str
     provider: str
     session_id: str
+
 
 class ConversationMessage(BaseModel):
     role: str
@@ -106,92 +110,78 @@ class ConversationUpdateRequest(BaseModel):
     title: str = Field(..., min_length=1)
 
 
-class ConversationStore:
-    """
-    In-memory store for chat conversations and their message history.
-    Keeps lightweight metadata and full message lists for retrieval.
-    """
+# Conversation Hub client ----------------------------------------------------
 
-    def __init__(self) -> None:
-        self.conversations: Dict[str, Dict[str, Any]] = {}
-        self.messages: Dict[str, List[Dict[str, Any]]] = {}
-        self._counter = 1
+class ConversationHubClient:
+    """Thin async HTTP client for the conversation-hub service."""
 
-    def _now(self) -> float:
-        return time.time()
+    def __init__(self, base_url: str) -> None:
+        self._base = base_url.rstrip("/")
 
-    def _default_title(self) -> str:
-        title = f"Conversation {self._counter}"
-        self._counter += 1
-        return title
+    async def ensure(self, conversation_id: str, model: str, title: Optional[str] = None) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base}/conversations/ensure",
+                json={"id": conversation_id, "model": model, "title": title},
+            )
+            resp.raise_for_status()
+            return resp.json()
 
-    def create(self, title: Optional[str], model: str, conversation_id: Optional[str] = None) -> Dict[str, Any]:
-        conv_id = conversation_id or str(uuid4())
-        now = self._now()
-        conversation = {
-            "id": conv_id,
-            "title": (title or "").strip() or self._default_title(),
-            "model": model,
-            "created_at": now,
-            "updated_at": now,
-            "message_count": 0,
-        }
-        self.conversations[conv_id] = conversation
-        self.messages[conv_id] = []
-        return conversation
+    async def append_message(self, conversation_id: str, role: str, content: str) -> None:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base}/conversations/{conversation_id}/messages",
+                json={"role": role, "content": content},
+            )
+            resp.raise_for_status()
 
-    def ensure(self, conversation_id: str, model: str, title: Optional[str] = None) -> Dict[str, Any]:
-        existing = self.conversations.get(conversation_id)
-        if existing:
-            # Keep model in sync with latest selection.
-            existing["model"] = model
-            return existing
-        return self.create(title=title, model=model, conversation_id=conversation_id)
+    async def list(self) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self._base}/conversations")
+            resp.raise_for_status()
+            return resp.json()
 
-    def list(self) -> List[Dict[str, Any]]:
-        return sorted(self.conversations.values(), key=lambda c: c["updated_at"], reverse=True)
+    async def create(self, title: Optional[str], model: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base}/conversations",
+                json={"title": title, "model": model},
+            )
+            resp.raise_for_status()
+            return resp.json()
 
-    def get(self, conversation_id: str) -> Dict[str, Any]:
-        conversation = self.conversations.get(conversation_id)
-        if not conversation:
-            raise KeyError(conversation_id)
-        return conversation
+    async def get(self, conversation_id: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self._base}/conversations/{conversation_id}")
+            if resp.status_code == 404:
+                raise KeyError(conversation_id)
+            resp.raise_for_status()
+            return resp.json()
 
-    def update_title(self, conversation_id: str, title: str) -> Dict[str, Any]:
-        conversation = self.get(conversation_id)
-        conversation["title"] = title.strip() or conversation["title"]
-        conversation["updated_at"] = self._now()
-        return conversation
+    async def update_title(self, conversation_id: str, title: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.patch(
+                f"{self._base}/conversations/{conversation_id}",
+                json={"title": title},
+            )
+            if resp.status_code == 404:
+                raise KeyError(conversation_id)
+            resp.raise_for_status()
+            return resp.json()
 
-    def delete(self, conversation_id: str) -> None:
-        self.conversations.pop(conversation_id, None)
-        self.messages.pop(conversation_id, None)
+    async def delete(self, conversation_id: str) -> None:
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(f"{self._base}/conversations/{conversation_id}")
+            if resp.status_code == 404:
+                raise KeyError(conversation_id)
+            resp.raise_for_status()
 
-    def append_message(self, conversation_id: str, role: str, content: str) -> Dict[str, Any]:
-        conversation = self.get(conversation_id)
-        entry = {
-            "role": role,
-            "content": content,
-            "timestamp": self._now(),
-        }
-        self.messages.setdefault(conversation_id, []).append(entry)
-        conversation["updated_at"] = entry["timestamp"]
-        conversation["message_count"] = len(self.messages.get(conversation_id, []))
-        return entry
 
-    def detail(self, conversation_id: str) -> Dict[str, Any]:
-        conversation = self.get(conversation_id)
-        return {
-            **conversation,
-            "messages": list(self.messages.get(conversation_id, [])),
-        }
-
+conv_client = ConversationHubClient(CONVERSATION_HUB_URL)
 
 session_service: Optional[Any] = None
 _runners: Dict[str, Any] = {}
 lock = asyncio.Lock()
-conversation_lock = asyncio.Lock()
-conversation_store = ConversationStore()
 
 
 def ensure_google_credentials() -> None:
@@ -302,8 +292,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     session_id = (request.session_id or f"default-{PROVIDER_ID}").strip() or f"default-{PROVIDER_ID}"
 
-    async with conversation_lock:
-        conversation_store.ensure(session_id, model=model, title=None)
+    await conv_client.ensure(session_id, model=model)
 
     try:
         get_runner(model)
@@ -313,9 +302,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
     async with lock:
         content = await run_agent_chat(message, session_id, model)
 
-    async with conversation_lock:
-        conversation_store.append_message(session_id, "user", message)
-        conversation_store.append_message(session_id, "assistant", content)
+    await conv_client.append_message(session_id, "user", message)
+    await conv_client.append_message(session_id, "assistant", content)
 
     return ChatResponse(content=content, provider=PROVIDER_ID, session_id=session_id)
 
@@ -331,12 +319,8 @@ def _conversation_not_found(conversation_id: str) -> HTTPException:
 
 @app.get("/conversations", response_model=ConversationListResponse)
 async def list_conversations() -> ConversationListResponse:
-    async with conversation_lock:
-        summaries = [
-            ConversationSummary(**c)
-            for c in conversation_store.list()
-        ]
-    return ConversationListResponse(conversations=summaries)
+    data = await conv_client.list()
+    return ConversationListResponse(**data)
 
 
 @app.post("/conversations", response_model=Conversation)
@@ -345,39 +329,34 @@ async def create_conversation(request: ConversationCreateRequest) -> Conversatio
     if model not in GOOGLE_MODELS:
         raise HTTPException(status_code=400, detail=f"Unknown model '{model}'. Available: {GOOGLE_MODELS}")
 
-    async with conversation_lock:
-        conversation = conversation_store.create(request.title, model=model)
-        detail = conversation_store.detail(conversation["id"])
-    return Conversation(**detail)
+    data = await conv_client.create(request.title, model=model)
+    return Conversation(**data)
 
 
 @app.get("/conversations/{conversation_id}", response_model=Conversation)
 async def get_conversation(conversation_id: str) -> Conversation:
-    async with conversation_lock:
-        try:
-            detail = conversation_store.detail(conversation_id)
-        except KeyError:
-            raise _conversation_not_found(conversation_id) from None
-    return Conversation(**detail)
+    try:
+        data = await conv_client.get(conversation_id)
+    except KeyError:
+        raise _conversation_not_found(conversation_id) from None
+    return Conversation(**data)
 
 
 @app.patch("/conversations/{conversation_id}", response_model=Conversation)
 async def update_conversation(conversation_id: str, request: ConversationUpdateRequest) -> Conversation:
-    async with conversation_lock:
-        try:
-            conversation_store.update_title(conversation_id, request.title)
-            detail = conversation_store.detail(conversation_id)
-        except KeyError:
-            raise _conversation_not_found(conversation_id) from None
-    return Conversation(**detail)
+    try:
+        data = await conv_client.update_title(conversation_id, request.title)
+    except KeyError:
+        raise _conversation_not_found(conversation_id) from None
+    return Conversation(**data)
 
 
 @app.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str) -> Dict[str, str]:
-    async with conversation_lock:
-        if conversation_id not in conversation_store.conversations:
-            raise _conversation_not_found(conversation_id)
-        conversation_store.delete(conversation_id)
+    try:
+        await conv_client.delete(conversation_id)
+    except KeyError:
+        raise _conversation_not_found(conversation_id) from None
     return {"status": "deleted", "id": conversation_id}
 
 

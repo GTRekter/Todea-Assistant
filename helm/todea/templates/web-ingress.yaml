@@ -38,21 +38,25 @@ spec:
                   number: {{ $.Values.mcp.service.port }}
           {{- end }}
           {{- if $.Values.ollamaHub.enabled }}
-          - path: /chat
+          {{- range list "/chat" "/models" "/conversations" "/settings" "/healthz" }}
+          - path: {{ . }}
             pathType: Prefix
             backend:
               service:
                 name: {{ include "todea.ollamaHub.name" $ }}
                 port:
                   number: {{ $.Values.ollamaHub.service.port }}
+          {{- end }}
           {{- else if $.Values.agentHub.enabled }}
-          - path: /chat
+          {{- range list "/chat" "/models" "/conversations" "/settings" "/healthz" }}
+          - path: {{ . }}
             pathType: Prefix
             backend:
               service:
                 name: {{ include "todea.agentHub.name" $ }}
                 port:
                   number: {{ $.Values.agentHub.service.port }}
+          {{- end }}
           {{- end }}
     {{- end }}
   {{- with .Values.web.ingress.tls }}

@@ -31,6 +31,8 @@ spec:
           env:
             - name: MCP_SERVER_URL
               value: {{ printf "http://%s:%d/mcp" (include "todea.mcp.name" .) (int .Values.mcp.service.port) | quote }}
+            - name: CONVERSATION_HUB_URL
+              value: {{ printf "http://%s:%d" (include "todea.conversationHub.name" .) (int .Values.conversationHub.service.port) | quote }}
             - name: AGENT_MODEL_GOOGLE
               value: {{ .Values.agentHub.agentModel | quote }}
             {{- if and .Values.agentHub.googleApiKey .Values.agentHub.enabled }}

@@ -1,5 +1,8 @@
 import asyncio
+import json
+import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -7,23 +10,35 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastmcp import Client as MCPClient
 from pydantic import BaseModel, Field
 from ollama import AsyncClient, ResponseError
+import httpx
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # Configuration ---------------------------------------------------------------
 ALLOW_ORIGINS = [origin.strip() for origin in os.getenv("ALLOW_ORIGINS", "*").split(",") if origin.strip()]
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("AGENT_MODEL_OLLAMA", os.getenv("OLLAMA_MODEL", "llama3.2"))
+OLLAMA_MODEL = os.getenv("AGENT_MODEL_OLLAMA", os.getenv("OLLAMA_MODEL", "llama3.1:8b"))
 PORT = int(os.getenv("PORT", "3200"))
 MODEL_REFRESH_SECONDS = int(os.getenv("MODEL_REFRESH_SECONDS", "60"))
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:3002/mcp")
+TOOL_REFRESH_SECONDS = int(os.getenv("TOOL_REFRESH_SECONDS", "300"))
+MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "10"))
+CONVERSATION_HUB_URL = os.getenv("CONVERSATION_HUB_URL", "http://localhost:3300")
 PROVIDER_ID = "ollama"
 DEFAULT_INSTRUCTION = os.getenv(
     "DEFAULT_INSTRUCTION",
     (
-        "You are the todea workspace assistant. Think out loud, then answer concisely. "
-        "If the user asks about Linkerd or Kubernetes, give actionable steps and sample commands."
+        "You are the Todea workspace assistant. Think out loud, then answer concisely. "
+        "You have tools available for managing Linkerd and Kubernetes. "
+        "When the user asks you to install, upgrade, uninstall, check, or configure Linkerd "
+        "or its components, you MUST call the appropriate tool rather than describing steps. "
+        "Always call tools when they are relevant to the user's request."
     ),
 )
 
@@ -101,91 +116,87 @@ class ClusterSettingsResponse(BaseModel):
     kube_server: str
 
 
+# Conversation Hub client ----------------------------------------------------
+
+class ConversationHubClient:
+    """Thin async HTTP client for the conversation-hub service."""
+
+    def __init__(self, base_url: str) -> None:
+        self._base = base_url.rstrip("/")
+
+    async def ensure(self, conversation_id: str, model: str, title: Optional[str] = None) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base}/conversations/ensure",
+                json={"id": conversation_id, "model": model, "title": title},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def append_message(self, conversation_id: str, role: str, content: str) -> None:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base}/conversations/{conversation_id}/messages",
+                json={"role": role, "content": content},
+            )
+            resp.raise_for_status()
+
+    async def get_messages(self, conversation_id: str) -> List[Dict[str, Any]]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self._base}/conversations/{conversation_id}/messages")
+            if resp.status_code == 404:
+                return []
+            resp.raise_for_status()
+            return resp.json()
+
+    async def list(self) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self._base}/conversations")
+            resp.raise_for_status()
+            return resp.json()
+
+    async def create(self, title: Optional[str], model: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self._base}/conversations",
+                json={"title": title, "model": model},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def get(self, conversation_id: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self._base}/conversations/{conversation_id}")
+            if resp.status_code == 404:
+                raise KeyError(conversation_id)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def update_title(self, conversation_id: str, title: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.patch(
+                f"{self._base}/conversations/{conversation_id}",
+                json={"title": title},
+            )
+            if resp.status_code == 404:
+                raise KeyError(conversation_id)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def delete(self, conversation_id: str) -> None:
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(f"{self._base}/conversations/{conversation_id}")
+            if resp.status_code == 404:
+                raise KeyError(conversation_id)
+            resp.raise_for_status()
+
+
+conv_client = ConversationHubClient(CONVERSATION_HUB_URL)
+
 # State ----------------------------------------------------------------------
-class ConversationStore:
-    """
-    In-memory store for chat conversations and their message history.
-    Keeps lightweight metadata and full message lists for retrieval.
-    """
-
-    def __init__(self) -> None:
-        self.conversations: Dict[str, Dict[str, Any]] = {}
-        self.messages: Dict[str, List[Dict[str, Any]]] = {}
-        self._counter = 1
-
-    def _now(self) -> float:
-        return time.time()
-
-    def _default_title(self) -> str:
-        title = f"Conversation {self._counter}"
-        self._counter += 1
-        return title
-
-    def create(self, title: Optional[str], model: str, conversation_id: Optional[str] = None) -> Dict[str, Any]:
-        conv_id = conversation_id or str(uuid4())
-        now = self._now()
-        conversation = {
-            "id": conv_id,
-            "title": (title or "").strip() or self._default_title(),
-            "model": model,
-            "created_at": now,
-            "updated_at": now,
-            "message_count": 0,
-        }
-        self.conversations[conv_id] = conversation
-        self.messages[conv_id] = []
-        return conversation
-
-    def ensure(self, conversation_id: str, model: str, title: Optional[str] = None) -> Dict[str, Any]:
-        existing = self.conversations.get(conversation_id)
-        if existing:
-            existing["model"] = model
-            return existing
-        return self.create(title=title, model=model, conversation_id=conversation_id)
-
-    def list(self) -> List[Dict[str, Any]]:
-        return sorted(self.conversations.values(), key=lambda c: c["updated_at"], reverse=True)
-
-    def get(self, conversation_id: str) -> Dict[str, Any]:
-        conversation = self.conversations.get(conversation_id)
-        if not conversation:
-            raise KeyError(conversation_id)
-        return conversation
-
-    def update_title(self, conversation_id: str, title: str) -> Dict[str, Any]:
-        conversation = self.get(conversation_id)
-        conversation["title"] = title.strip() or conversation["title"]
-        conversation["updated_at"] = self._now()
-        return conversation
-
-    def delete(self, conversation_id: str) -> None:
-        self.conversations.pop(conversation_id, None)
-        self.messages.pop(conversation_id, None)
-
-    def append_message(self, conversation_id: str, role: str, content: str) -> Dict[str, Any]:
-        conversation = self.get(conversation_id)
-        entry = {
-            "role": role,
-            "content": content,
-            "timestamp": self._now(),
-        }
-        self.messages.setdefault(conversation_id, []).append(entry)
-        conversation["updated_at"] = entry["timestamp"]
-        conversation["message_count"] = len(self.messages.get(conversation_id, []))
-        return entry
-
-    def detail(self, conversation_id: str) -> Dict[str, Any]:
-        conversation = self.get(conversation_id)
-        return {
-            **conversation,
-            "messages": list(self.messages.get(conversation_id, [])),
-        }
-
-
-conversation_store = ConversationStore()
-conversation_lock = asyncio.Lock()
 chat_lock = asyncio.Lock()
 _model_cache: Dict[str, Any] = {"names": [], "ts": 0.0}
+_tool_cache: Dict[str, Any] = {"tools": [], "ts": 0.0}
 
 
 # Helpers --------------------------------------------------------------------
@@ -193,19 +204,18 @@ async def _list_models(force: bool = False) -> List[str]:
     now = time.time()
     if not _model_cache["names"] or force or (now - _model_cache["ts"] > MODEL_REFRESH_SECONDS):
         try:
-            async with AsyncClient(host=OLLAMA_HOST) as client:
-                response = await client.list()
+            response = await AsyncClient(host=OLLAMA_HOST).list()
         except ResponseError as exc:  # type: ignore
             raise HTTPException(status_code=502, detail=f"Ollama list failed: {exc}") from exc
         except Exception as exc:  # pragma: no cover - defensive
             raise HTTPException(status_code=502, detail=f"Failed to reach Ollama at {OLLAMA_HOST}: {exc}") from exc
 
-        models = response.get("models", []) if isinstance(response, dict) else []
-        names = []
-        for item in models:
-            name = item.get("name") or item.get("model")
-            if name:
-                names.append(name)
+        if isinstance(response, dict):
+            items = response.get("models", [])
+            names = [item.get("name") or item.get("model") for item in items if item.get("name") or item.get("model")]
+        else:
+            names = [getattr(m, "model", None) or getattr(m, "name", None) for m in getattr(response, "models", [])]
+            names = [n for n in names if n]
         if not names:
             raise HTTPException(status_code=400, detail="No models installed on the Ollama host. Use 'ollama pull <model>'.")
         _model_cache["names"] = names
@@ -213,36 +223,329 @@ async def _list_models(force: bool = False) -> List[str]:
     return _model_cache["names"]
 
 
-def _history_for_session(session_id: str) -> List[Dict[str, str]]:
-    messages = conversation_store.messages.get(session_id, [])
+async def _list_mcp_tools(force: bool = False) -> List[Dict[str, Any]]:
+    """Fetch the MCP tool list and convert to Ollama format. Cached for TOOL_REFRESH_SECONDS.
+    Returns [] if the MCP server is unreachable (graceful degradation)."""
+    now = time.time()
+    if not _tool_cache["tools"] or force or (now - _tool_cache["ts"] > TOOL_REFRESH_SECONDS):
+        try:
+            async with MCPClient(MCP_SERVER_URL) as mcp:
+                raw_tools = await mcp.list_tools()
+            _tool_cache["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description or "",
+                        "parameters": t.inputSchema or {"type": "object", "properties": {}},
+                    },
+                }
+                for t in raw_tools
+            ]
+            _tool_cache["ts"] = now
+            logger.info("Loaded %d MCP tools from %s", len(_tool_cache["tools"]), MCP_SERVER_URL)
+        except Exception as exc:
+            logger.warning("MCP unreachable; tool calling disabled. Error: %s", exc)
+            # Do NOT update ts so the next request retries immediately.
+    return _tool_cache["tools"]
+
+
+async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
+    """Execute a single MCP tool and return its output as a string."""
+    async with MCPClient(MCP_SERVER_URL) as mcp:
+        result = await mcp.call_tool(tool_name, arguments)
+    if result.content:
+        texts = [b.text for b in result.content if hasattr(b, "text") and b.text]
+        if texts:
+            return "\n".join(texts)
+    if result.data is not None:
+        return str(result.data)
+    return repr(result)
+
+
+def _extract_inline_tool_calls(content: str) -> List[Dict[str, Any]]:
+    """Extract tool calls that a model embedded as JSON text in its content.
+
+    Smaller models often output {"name": "...", "parameters": {...}} as plain text
+    instead of using the structured tool_calls field. This parser finds those objects
+    and normalises them into the same format as structured tool_calls.
+    """
+    calls: List[Dict[str, Any]] = []
+
+    # 1. Try JSON inside code blocks first (higher confidence).
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?})\s*```", content, re.DOTALL):
+        try:
+            obj = json.loads(m.group(1))
+            name = obj.get("name") or (obj.get("function") or {}).get("name")
+            args = (
+                obj.get("parameters")
+                or obj.get("arguments")
+                or (obj.get("function") or {}).get("arguments")
+                or {}
+            )
+            if name and isinstance(name, str):
+                calls.append({"function": {"name": name, "arguments": args}})
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    if calls:
+        return calls
+
+    # 2. Scan bare text for top-level JSON objects with a "name" key.
+    depth, start = 0, -1
+    for i, ch in enumerate(content):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    obj = json.loads(content[start : i + 1])
+                    name = obj.get("name") or (obj.get("function") or {}).get("name")
+                    args = (
+                        obj.get("parameters")
+                        or obj.get("arguments")
+                        or (obj.get("function") or {}).get("arguments")
+                        or {}
+                    )
+                    if name and isinstance(name, str):
+                        calls.append({"function": {"name": name, "arguments": args}})
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+                start = -1
+    return calls
+
+
+def _resolve_tool_name(name: str, available_tools: List[Dict[str, Any]]) -> Optional[str]:
+    """Resolve a (possibly hallucinated) tool name to a real MCP tool name.
+
+    Tries exact match first, then falls back to substring / token overlap matching.
+    Returns None if no reasonable match is found.
+    """
+    known = [t["function"]["name"] for t in available_tools]
+    if name in known:
+        return name
+    # Substring match: find tools whose name contains the requested name or vice-versa.
+    matches = [n for n in known if name in n or n in name]
+    if len(matches) == 1:
+        logger.info("Resolved tool '%s' -> '%s'", name, matches[0])
+        return matches[0]
+    if len(matches) > 1:
+        # Pick the one with the most token overlap (split on underscore).
+        req_tokens = set(name.split("_"))
+        best = max(matches, key=lambda n: len(req_tokens & set(n.split("_"))))
+        logger.info("Resolved tool '%s' -> '%s' (best of %s)", name, best, matches)
+        return best
+    logger.warning("Cannot resolve tool name '%s'. Known tools: %s", name, known)
+    return None
+
+
+async def _extract_tool_call_via_model(
+    content: str,
+    tools_for_ollama: List[Dict[str, Any]],
+    client: AsyncClient,
+    model: str,
+) -> Optional[Dict[str, Any]]:
+    """Last-resort extraction: re-ask the model to output its tool call intent as JSON.
+
+    Used when the model mentioned a known tool but formatted the call wrong (e.g. as a
+    bash command or prose).  Runs a short focused call with Ollama's constrained JSON
+    format mode so the output is guaranteed to be parseable.
+    """
+    if not tools_for_ollama:
+        return None
+    known_names = [t["function"]["name"] for t in tools_for_ollama]
+    if not any(name in content for name in known_names):
+        return None  # No known tool mentioned — nothing to extract.
+
+    tool_specs = json.dumps(
+        [
+            {"name": t["function"]["name"], "parameters": t["function"]["parameters"]}
+            for t in tools_for_ollama
+        ]
+    )
+    extraction_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a JSON extractor. "
+                "Identify which tool should be called and with what arguments. "
+                'Output ONLY a JSON object: {"name": "<tool_name>", "arguments": {<key: value>}}. '
+                "No prose, no markdown, just the JSON object."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Assistant message:\n{content}\n\n"
+                f"Available tools (with parameter schemas):\n{tool_specs}\n\n"
+                "Extract the tool call:"
+            ),
+        },
+    ]
+    try:
+        result = await client.chat(
+            model=model,
+            messages=extraction_messages,
+            format={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {"type": "object"},
+                },
+                "required": ["name", "arguments"],
+            },
+            stream=False,
+        )
+        if isinstance(result, dict):
+            raw = result.get("message", {}).get("content", "")
+        else:
+            msg = getattr(result, "message", None)
+            raw = getattr(msg, "content", "") if msg else ""
+        obj = json.loads(raw)
+        name = obj.get("name", "")
+        args = obj.get("arguments") or {}
+        if name and isinstance(name, str):
+            logger.info("Extracted tool call via model: name='%s' args=%s", name, args)
+            return {"function": {"name": name, "arguments": args}}
+    except Exception as exc:
+        logger.warning("Model-based tool extraction failed: %s", exc)
+    return None
+
+
+async def _history_for_session(session_id: str) -> List[Dict[str, str]]:
+    messages = await conv_client.get_messages(session_id)
     return [{"role": m["role"], "content": m["content"]} for m in messages]
 
 
 async def run_ollama_chat(message: str, session_id: str, model: str) -> str:
-    history = _history_for_session(session_id)
-    payload = [{"role": "system", "content": DEFAULT_INSTRUCTION}] + history + [
-        {"role": "user", "content": message}
-    ]
+    history = await _history_for_session(session_id)
+    messages: List[Dict[str, Any]] = (
+        [{"role": "system", "content": DEFAULT_INSTRUCTION}]
+        + history
+        + [{"role": "user", "content": message}]
+    )
 
-    try:
-        async with AsyncClient(host=OLLAMA_HOST) as client:
+    tools_for_ollama = await _list_mcp_tools()
+
+    # Include exact tool names in the system message so the model doesn't hallucinate them.
+    if tools_for_ollama:
+        tool_names_hint = "Available tools (use EXACT names): " + ", ".join(
+            t["function"]["name"] for t in tools_for_ollama
+        )
+        messages[0]["content"] = messages[0]["content"] + "\n\n" + tool_names_hint
+
+    client = AsyncClient(host=OLLAMA_HOST)
+
+    for iteration in range(MAX_TOOL_ITERATIONS + 1):
+        try:
             result = await client.chat(
                 model=model,
-                messages=payload,
+                messages=messages,
+                tools=tools_for_ollama or None,
                 stream=False,
             )
-    except ResponseError as exc:  # type: ignore
-        raise HTTPException(status_code=502, detail=f"Ollama chat failed: {exc}") from exc
+        except ResponseError as exc:  # type: ignore
+            raise HTTPException(status_code=502, detail=f"Ollama chat failed: {exc}") from exc
+        except Exception as exc:  # pragma: no cover - defensive
+            raise HTTPException(status_code=502, detail=f"Failed to reach Ollama at {OLLAMA_HOST}: {exc}") from exc
+
+        # Normalise: handle both Pydantic object and dict responses.
+        if isinstance(result, dict):
+            msg_obj = result.get("message", {})
+            tool_calls_raw = msg_obj.get("tool_calls") or []
+            content = msg_obj.get("content", "")
+            assistant_msg: Any = {"role": "assistant", "content": content}
+            if tool_calls_raw:
+                assistant_msg["tool_calls"] = tool_calls_raw
+        else:
+            msg_obj = getattr(result, "message", None)
+            tool_calls_raw = getattr(msg_obj, "tool_calls", None) or []
+            content = getattr(msg_obj, "content", "") or ""
+            assistant_msg = msg_obj
+
+        messages.append(assistant_msg)
+
+        if not tool_calls_raw:
+            if iteration < MAX_TOOL_ITERATIONS:
+                # Fallback 1: model embedded the call as inline JSON text.
+                inline = _extract_inline_tool_calls(content)
+                if inline:
+                    logger.info(
+                        "Found %d inline tool call(s) in content (model did not use structured API).",
+                        len(inline),
+                    )
+                    tool_calls_raw = inline
+                    messages[-1] = {"role": "assistant", "content": "", "tool_calls": inline}
+
+                # Fallback 2: model mentioned a tool name but formatted it wrong
+                # (e.g. as a bash command). Re-ask with constrained JSON output.
+                if not tool_calls_raw:
+                    extracted = await _extract_tool_call_via_model(
+                        content, tools_for_ollama, client, model
+                    )
+                    if extracted:
+                        resolved = _resolve_tool_name(
+                            extracted["function"]["name"], tools_for_ollama
+                        )
+                        if resolved:
+                            extracted["function"]["name"] = resolved
+                            tool_calls_raw = [extracted]
+                            messages[-1] = {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": tool_calls_raw,
+                            }
+            if not tool_calls_raw:
+                if not content:
+                    raise HTTPException(status_code=500, detail="The Ollama model did not return any text.")
+                return str(content)
+
+        if iteration == MAX_TOOL_ITERATIONS:
+            logger.warning("MAX_TOOL_ITERATIONS (%d) reached for session %s.", MAX_TOOL_ITERATIONS, session_id)
+            messages.append({"role": "tool", "content": "Tool iteration limit reached."})
+            break
+
+        for tc in tool_calls_raw:
+            if isinstance(tc, dict):
+                fn_name = tc.get("function", {}).get("name", "")
+                fn_args = tc.get("function", {}).get("arguments", {})
+            else:
+                fn = getattr(tc, "function", None)
+                fn_name = getattr(fn, "name", "") if fn else ""
+                fn_args = getattr(fn, "arguments", {}) if fn else {}
+
+            if not fn_name:
+                continue
+
+            # Resolve potentially hallucinated name to an actual MCP tool name.
+            resolved = _resolve_tool_name(fn_name, tools_for_ollama)
+            if not resolved:
+                messages.append({"role": "tool", "content": f"Unknown tool: '{fn_name}'"})
+                continue
+            fn_name = resolved
+
+            logger.info("Calling MCP tool '%s' with args: %s", fn_name, fn_args)
+            try:
+                tool_result = await _call_mcp_tool(fn_name, fn_args or {})
+            except Exception as exc:
+                tool_result = f"Tool '{fn_name}' error: {exc}"
+                logger.warning("MCP tool '%s' error: %s", fn_name, exc)
+
+            messages.append({"role": "tool", "content": tool_result})
+
+    # Synthesis pass after hitting the iteration cap.
+    try:
+        final = await client.chat(model=model, messages=messages, tools=None, stream=False)
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=502, detail=f"Failed to reach Ollama at {OLLAMA_HOST}: {exc}") from exc
-
-    if not isinstance(result, dict) or "message" not in result:
-        raise HTTPException(status_code=500, detail="Unexpected response from Ollama.")
-
-    content = result.get("message", {}).get("content", "")
-    if not content:
-        raise HTTPException(status_code=500, detail="The Ollama model did not return any text.")
-    return str(content)
+    if isinstance(final, dict):
+        content = final.get("message", {}).get("content", "")
+    else:
+        msg = getattr(final, "message", None)
+        content = getattr(msg, "content", "") if msg else ""
+    return str(content) if content else "Agent completed tool execution but produced no summary."
 
 
 # Routes ---------------------------------------------------------------------
@@ -262,19 +565,20 @@ async def chat(request: ChatRequest) -> ChatResponse:
     available_models = await _list_models()
     model = (request.model or OLLAMA_MODEL).strip() or OLLAMA_MODEL
     if available_models and model not in available_models:
-        raise HTTPException(status_code=400, detail=f"Unknown model '{model}'. Available: {available_models}")
+        logger.warning("Requested model '%s' not available; falling back to '%s'.", model, OLLAMA_MODEL)
+        model = OLLAMA_MODEL
+    if available_models and model not in available_models:
+        raise HTTPException(status_code=400, detail=f"Default model '{model}' not available. Available: {available_models}")
 
     session_id = (request.session_id or f"default-{PROVIDER_ID}").strip() or f"default-{PROVIDER_ID}"
 
-    async with conversation_lock:
-        conversation_store.ensure(session_id, model=model, title=None)
+    await conv_client.ensure(session_id, model=model)
 
     async with chat_lock:
         content = await run_ollama_chat(message, session_id, model)
 
-    async with conversation_lock:
-        conversation_store.append_message(session_id, "user", message)
-        conversation_store.append_message(session_id, "assistant", content)
+    await conv_client.append_message(session_id, "user", message)
+    await conv_client.append_message(session_id, "assistant", content)
 
     return ChatResponse(content=content, provider=PROVIDER_ID, session_id=session_id)
 
@@ -287,9 +591,8 @@ def _conversation_not_found(conversation_id: str) -> HTTPException:
 
 @app.get("/conversations", response_model=ConversationListResponse)
 async def list_conversations() -> ConversationListResponse:
-    async with conversation_lock:
-        summaries = [ConversationSummary(**c) for c in conversation_store.list()]
-    return ConversationListResponse(conversations=summaries)
+    data = await conv_client.list()
+    return ConversationListResponse(**data)
 
 
 @app.post("/conversations", response_model=Conversation)
@@ -299,39 +602,34 @@ async def create_conversation(request: ConversationCreateRequest) -> Conversatio
     if available_models and model not in available_models:
         raise HTTPException(status_code=400, detail=f"Unknown model '{model}'. Available: {available_models}")
 
-    async with conversation_lock:
-        conversation = conversation_store.create(request.title, model=model)
-        detail = conversation_store.detail(conversation["id"])
-    return Conversation(**detail)
+    data = await conv_client.create(request.title, model=model)
+    return Conversation(**data)
 
 
 @app.get("/conversations/{conversation_id}", response_model=Conversation)
 async def get_conversation(conversation_id: str) -> Conversation:
-    async with conversation_lock:
-        try:
-            detail = conversation_store.detail(conversation_id)
-        except KeyError:
-            raise _conversation_not_found(conversation_id) from None
-    return Conversation(**detail)
+    try:
+        data = await conv_client.get(conversation_id)
+    except KeyError:
+        raise _conversation_not_found(conversation_id) from None
+    return Conversation(**data)
 
 
 @app.patch("/conversations/{conversation_id}", response_model=Conversation)
 async def update_conversation(conversation_id: str, request: ConversationUpdateRequest) -> Conversation:
-    async with conversation_lock:
-        try:
-            conversation_store.update_title(conversation_id, request.title)
-            detail = conversation_store.detail(conversation_id)
-        except KeyError:
-            raise _conversation_not_found(conversation_id) from None
-    return Conversation(**detail)
+    try:
+        data = await conv_client.update_title(conversation_id, request.title)
+    except KeyError:
+        raise _conversation_not_found(conversation_id) from None
+    return Conversation(**data)
 
 
 @app.delete("/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str) -> Dict[str, str]:
-    async with conversation_lock:
-        if conversation_id not in conversation_store.conversations:
-            raise _conversation_not_found(conversation_id)
-        conversation_store.delete(conversation_id)
+    try:
+        await conv_client.delete(conversation_id)
+    except KeyError:
+        raise _conversation_not_found(conversation_id)
     return {"status": "deleted", "id": conversation_id}
 
 
@@ -339,12 +637,10 @@ async def delete_conversation(conversation_id: str) -> Dict[str, str]:
 @app.get("/healthz")
 async def health() -> Dict[str, Any]:
     try:
-        names = await _list_models()
-    except HTTPException as exc:
-        raise exc
-    except Exception as exc:  # pragma: no cover - defensive
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return {"status": "ok", "models": len(names)}
+        await AsyncClient(host=OLLAMA_HOST).list()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach Ollama at {OLLAMA_HOST}: {exc}") from exc
+    return {"status": "ok"}
 
 
 # Settings stubs (keeps the React settings page working) ---------------------

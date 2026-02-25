@@ -31,6 +31,8 @@ spec:
           env:
             - name: OLLAMA_HOST
               value: {{ .Values.ollamaHub.ollamaHost | quote }}
+            - name: CONVERSATION_HUB_URL
+              value: {{ printf "http://%s:%d" (include "todea.conversationHub.name" .) (int .Values.conversationHub.service.port) | quote }}
             - name: AGENT_MODEL_OLLAMA
               value: {{ .Values.ollamaHub.agentModel | quote }}
             - name: ALLOW_ORIGINS

@@ -48,6 +48,10 @@ Create component specific fullnames.
 {{- include "todea.componentName" (dict "root" . "component" "ollama") -}}
 {{- end -}}
 
+{{- define "todea.conversationHub.name" -}}
+{{- include "todea.componentName" (dict "root" . "component" "conversation-hub") -}}
+{{- end -}}
+
 {{/*
 Default labels shared by objects.
 */}}
@@ -92,6 +96,11 @@ app.kubernetes.io/component: ollama-hub
 {{- define "todea.ollamaRuntime.selectorLabels" -}}
 {{ include "todea.selectorLabels" . }}
 app.kubernetes.io/component: ollama
+{{- end -}}
+
+{{- define "todea.conversationHub.selectorLabels" -}}
+{{ include "todea.selectorLabels" . }}
+app.kubernetes.io/component: conversation-hub
 {{- end -}}
 
 {{- define "todea.mcp.secretName" -}}

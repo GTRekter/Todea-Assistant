@@ -15,6 +15,7 @@ Todea-Assistant is composed of the following services:
 | **Web** | `web/` | 80 | React SPA + Express static server |
 | **Agent Hub** | `servers/agent-hub/` | 3100 | LLM orchestrator (Google Gemini via ADK) + MCP client |
 | **MCP Server** | `servers/mcp/` | 3002 | FastMCP tool server with a Linkerd CLI agent |
+| **Conversation Hub** | `servers/conversation-hub/` | 3300 | Shared conversation + message store for all providers |
 | **Ollama Hub** _(optional)_ | `servers/ollama-hub/` | 3200 | Drop-in chat gateway for Ollama models (no Google key) |
 | **Ollama Runtime** _(optional)_ | — | 11434 | In-cluster `ollama/ollama` pod pulled from Docker Hub |
 
@@ -26,10 +27,13 @@ Browser
   │  HTTP (port 8080 via k3d load balancer)
   ▼
 Ingress (Traefik)
-  ├── /              → todea-web          :80    React SPA + Express
-  ├── /mcp           → todea-mcp          :3002  MCP agent server
-  └── /chat          → todea-agent-hub    :3100  Gemini path (default)
-                       todea-ollama-hub   :3200  Ollama path (ollamaHub.enabled=true)
+  ├── /              → todea-web              :80    React SPA + Express
+  ├── /mcp           → todea-mcp              :3002  MCP agent server
+  └── /chat          → todea-agent-hub        :3100  Gemini path (default)
+                       todea-ollama-hub       :3200  Ollama path (ollamaHub.enabled=true)
+
+Internal only (no ingress):
+  todea-conversation-hub  :3300  ← called by agent-hub and ollama-hub
 ```
 
 ### Call graph
@@ -37,22 +41,26 @@ Ingress (Traefik)
 **Gemini path** (requires `GOOGLE_API_KEY`):
 ```
 React UI  ──► Agent Hub (Gemini ADK)  ──► MCP Server  ──► linkerd CLI  ──► Kubernetes
+                    │
+                    └──► Conversation Hub  (store & retrieve conversation history)
 ```
 
 **Ollama path** (no API key required):
 ```
 React UI  ──► Ollama Hub  ──► Ollama Runtime (in-cluster or external)
+                   │
+                   └──► Conversation Hub  (store & retrieve conversation history)
 ```
-
-The Ollama path does not broker MCP tool calls — it is direct chat with the model.
 
 ### Coupling table
 
 | Caller | Callee | Fails if callee is down? |
 |---|---|---|
 | Agent Hub | MCP Server | yes — chat unavailable |
+| Agent Hub | Conversation Hub | yes — chat and conversation list unavailable |
 | MCP Server | `linkerd` CLI | yes — all tools fail |
 | Ollama Hub | Ollama Runtime | yes — chat unavailable |
+| Ollama Hub | Conversation Hub | yes — chat and conversation list unavailable |
 
 ---
 
@@ -64,31 +72,23 @@ The Ollama path does not broker MCP tool calls — it is direct chat with the mo
 k3d cluster create todea --agents 1 --port "8080:80@loadbalancer"
 ```
 
-### 2. Install Linkerd
-
-```bash
-linkerd check --pre
-linkerd install --crds | kubectl apply -f -
-linkerd install | kubectl apply -f -
-linkerd viz install | kubectl apply -f -
-linkerd check
-```
-
-### 3. Choose a path
+### 2. Choose a path
 
 #### Path A — Google Gemini
 
 Build and import images:
 
 ```bash
-docker build -t todea-web:local           ./web
-docker build -t todea-mcp:local           ./servers/mcp
-docker build -t todea-agent-hub:local     ./servers/agent-hub
+docker build -t todea-web:local               ./web
+docker build -t todea-mcp:local               ./servers/mcp
+docker build -t todea-agent-hub:local         ./servers/agent-hub
+docker build -t todea-conversation-hub:local  ./servers/conversation-hub
 
 k3d image import --cluster todea \
   todea-web:local \
   todea-mcp:local \
-  todea-agent-hub:local
+  todea-agent-hub:local \
+  todea-conversation-hub:local
 ```
 
 Deploy:
@@ -96,9 +96,10 @@ Deploy:
 ```bash
 helm upgrade --install todea ./helm/todea \
   --namespace todea --create-namespace \
-  --set web.image.repository=todea-web      --set web.image.tag=local \
-  --set mcp.image.repository=todea-mcp     --set mcp.image.tag=local \
-  --set agentHub.image.repository=todea-agent-hub --set agentHub.image.tag=local \
+  --set web.image.repository=todea-web              --set web.image.tag=local \
+  --set mcp.image.repository=todea-mcp              --set mcp.image.tag=local \
+  --set agentHub.image.repository=todea-agent-hub   --set agentHub.image.tag=local \
+  --set conversationHub.image.repository=todea-conversation-hub --set conversationHub.image.tag=local \
   --set agentHub.googleApiKey=<YOUR-GOOGLE-API-KEY> \
   --set mcp.googleApiKey=<YOUR-GOOGLE-API-KEY> \
   --set web.ingress.enabled=true \
@@ -109,17 +110,19 @@ helm upgrade --install todea ./helm/todea \
 
 #### Path B — Ollama (no API key)
 
-Build and import the Ollama Hub image. The `ollama/ollama` runtime is pulled directly from Docker Hub by the cluster — no local build needed.
+Build and import the Ollama Hub and Conversation Hub images. The `ollama/ollama` runtime is pulled directly from Docker Hub by the cluster — no local build needed.
 
 ```bash
-docker build -t todea-web:local           ./web
-docker build -t todea-mcp:local           ./servers/mcp
-docker build -t todea-ollama-hub:local    ./servers/ollama-hub
+docker build -t todea-web:local               ./web
+docker build -t todea-mcp:local               ./servers/mcp
+docker build -t todea-ollama-hub:local        ./servers/ollama-hub
+docker build -t todea-conversation-hub:local  ./servers/conversation-hub
 
 k3d image import --cluster todea \
   todea-web:local \
   todea-mcp:local \
-  todea-ollama-hub:local
+  todea-ollama-hub:local \
+  todea-conversation-hub:local
 ```
 
 > **Tip — speed up the first deploy:** By default k3d pulls `ollama/ollama` from Docker Hub at deploy time, which can be slow. Pre-pull it into the cluster's image store first:
@@ -131,31 +134,29 @@ k3d image import --cluster todea \
 Deploy:
 
 ```bash
-helm upgrade --install todea ./helm/todea \
-  --namespace todea --create-namespace \
-  --set web.image.repository=todea-web     --set web.image.tag=local \
-  --set mcp.image.repository=todea-mcp    --set mcp.image.tag=local \
+helm upgrade --install todea --namespace todea --create-namespace \
+  --set web.image.repository=todea-web \
+  --set web.image.tag=local \
+  --set mcp.image.repository=todea-mcp \
+  --set mcp.image.tag=local \
   --set agentHub.enabled=false \
   --set ollamaHub.enabled=true \
-  --set ollamaHub.image.repository=todea-ollama-hub --set ollamaHub.image.tag=local \
+  --set ollamaHub.image.repository=todea-ollama-hub \
+  --set ollamaHub.image.tag=local \
+  --set conversationHub.image.repository=todea-conversation-hub \
+  --set conversationHub.image.tag=local \
   --set ollamaRuntime.enabled=true \
-  --set ollamaRuntime.model=llama3.2 \
+  --set ollamaRuntime.model=llama3.1:8b \
   --set ollamaRuntime.persistence.enabled=true \
   --set ollamaRuntime.persistence.size=10Gi \
   --set web.ingress.enabled=true \
   --set 'web.ingress.hosts[0].host=localhost' \
   --set 'web.ingress.hosts[0].paths[0].path=/' \
-  --set 'web.ingress.hosts[0].paths[0].pathType=Prefix'
+  --set 'web.ingress.hosts[0].paths[0].pathType=Prefix' \
+  ./helm/todea
 ```
 
-The `ollama/ollama` pod pulls `llama3.2` automatically on startup via a `postStart` hook. The Ollama Hub pod stays `0/1` until the model is ready. Follow progress:
-
-```bash
-kubectl -n todea get pod -w
-kubectl -n todea logs deploy/todea-ollama -f
-```
-
-### 4. Open the UI
+### 3. Open the UI
 
 ```bash
 open http://localhost:8080
@@ -184,7 +185,7 @@ helm upgrade todea ./helm/todea \
   --namespace todea \
   --reuse-values \
   --set ollamaRuntime.enabled=true \
-  --set ollamaRuntime.model=llama3.2 \
+  --set ollamaRuntime.model=llama3.1:8b \
   --set ollamaRuntime.persistence.enabled=true \
   --set ollamaRuntime.persistence.size=10Gi
 ```
@@ -278,6 +279,22 @@ adk web   # opens the Google ADK web harness
 
 Try: "Is Linkerd healthy?", "Show me traffic stats for all deployments", "Are all connections using mTLS?"
 
+### Conversation Hub (`servers/conversation-hub`)
+
+Start this before running Agent Hub or Ollama Hub locally.
+
+```bash
+cd servers/conversation-hub
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app:app --port 3300
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
+| `PORT` | `3300` | Port to listen on |
+
 ### Agent Hub (`servers/agent-hub`)
 
 ```bash
@@ -292,6 +309,7 @@ uvicorn app:app --port 3100
 |---|---|---|
 | `GOOGLE_API_KEY` | _(required)_ | Google GenAI API key |
 | `MCP_SERVER_URL` | `http://localhost:3002/mcp` | MCP server endpoint |
+| `CONVERSATION_HUB_URL` | `http://localhost:3300` | Conversation Hub endpoint |
 | `AGENT_MODEL_GOOGLE` | `gemini-2.0-flash` | Gemini model to use |
 | `PORT` | `3100` | Port to listen on |
 
@@ -302,7 +320,7 @@ Requires an Ollama server with at least one model pulled.
 ```bash
 # Start ollama locally
 ollama serve &
-ollama pull llama3.2
+ollama pull llama3.1:8b
 
 cd servers/ollama-hub
 python3 -m venv .venv && source .venv/bin/activate
@@ -316,7 +334,8 @@ Point the React UI at it: `REACT_APP_AGENT_HUB_URL=http://localhost:3200/chat ya
 | Variable | Default | Description |
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server base URL |
-| `AGENT_MODEL_OLLAMA` | `llama3.2` | Default model |
+| `CONVERSATION_HUB_URL` | `http://localhost:3300` | Conversation Hub endpoint |
+| `AGENT_MODEL_OLLAMA` | `llama3.1:8b` | Default model |
 | `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
 | `PORT` | `3200` | Port to listen on |
 

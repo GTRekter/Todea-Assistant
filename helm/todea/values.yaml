@@ -70,8 +70,23 @@ ollamaHub:
     type: ClusterIP
     port: 3200
   allowOrigins: "*"
-  agentModel: llama3.2
+  agentModel: llama3.1:8b
   ollamaHost: http://todea-ollama:11434
+  env:
+    MCP_SERVER_URL: "http://todea-mcp:3002/mcp"
+
+# Conversation Hub server (shared conversation storage) ----------------------
+conversationHub:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: todea-conversation-hub
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3300
+  allowOrigins: "*"
   env: {}
 
 # In-cluster Ollama runtime (optional) ---------------------------------------
@@ -87,7 +102,7 @@ ollamaRuntime:
     port: 11434
   # Model to pull automatically on first startup (empty string to skip).
   # Without persistence, the model is re-downloaded every time the pod restarts.
-  model: "llama3.2"
+  model: "llama3.1:8b"
   persistence:
     enabled: false           # true to keep model cache between restarts
     size: 10Gi
