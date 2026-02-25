@@ -1,0 +1,58 @@
+{{- if .Values.ollamaHub.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todea.ollamaHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-hub
+spec:
+  replicas: {{ .Values.ollamaHub.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "todea.ollamaHub.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "todea.ollamaHub.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ollama-hub
+          image: "{{ .Values.ollamaHub.image.repository }}:{{ .Values.ollamaHub.image.tag }}"
+          imagePullPolicy: {{ .Values.ollamaHub.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ollamaHub.service.port }}
+              protocol: TCP
+          env:
+            - name: OLLAMA_HOST
+              value: {{ .Values.ollamaHub.ollamaHost | quote }}
+            - name: AGENT_MODEL_OLLAMA
+              value: {{ .Values.ollamaHub.agentModel | quote }}
+            - name: ALLOW_ORIGINS
+              value: {{ .Values.ollamaHub.allowOrigins | quote }}
+            {{- range $key, $value := .Values.ollamaHub.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          # TCP liveness: only restarts if the Python process itself dies.
+          # The HTTP readiness probe handles waiting for Ollama to become available
+          # without triggering CrashLoopBackOff while the runtime is still starting.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 60   # up to ~10 min for Ollama to pull and load a model
+{{- end }}

@@ -35,10 +35,6 @@ spec:
               value: {{ .Values.mcp.allowOrigins | quote }}
             - name: AGENT_MODEL
               value: {{ .Values.mcp.agentModel | quote }}
-            - name: UNIVERSE_API_BASE_URL
-              value: {{ printf "http://%s:%d/api/universe" (include "todea.universe.name" .) (int .Values.universe.service.port) | quote }}
-            - name: FLEET_API_BASE_URL
-              value: {{ printf "http://%s:%d/api/fleet" (include "todea.fleet.name" .) (int .Values.fleet.service.port) | quote }}
             {{- if and .Values.mcp.googleApiKey .Values.mcp.enabled }}
             - name: GOOGLE_API_KEY
               valueFrom:

@@ -29,10 +29,8 @@ spec:
               containerPort: {{ .Values.web.service.port }}
               protocol: TCP
           env:
-            - name: REACT_APP_UNIVERSE_API_BASE_URL
-              value: {{ printf "http://%s:%d/api/universe" (include "todea.universe.name" .) (int .Values.universe.service.port) | quote }}
-            - name: REACT_APP_FLEET_API_BASE_URL
-              value: {{ printf "http://%s:%d/api/fleet" (include "todea.fleet.name" .) (int .Values.fleet.service.port) | quote }}
-            - name: REACT_APP_AGENT_HUB_URL
-              value: {{ printf "http://%s:%d/chat" (include "todea.agentHub.name" .) (int .Values.agentHub.service.port) | quote }}
+            {{- range $key, $value := .Values.web.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
 {{- end }}

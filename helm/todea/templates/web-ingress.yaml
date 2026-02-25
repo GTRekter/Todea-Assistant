@@ -28,33 +28,6 @@ spec:
                 port:
                   number: {{ $.Values.web.service.port }}
           {{- end }}
-          {{- if $.Values.universe.enabled }}
-          - path: /api/universe
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "todea.universe.name" $ }}
-                port:
-                  number: {{ $.Values.universe.service.port }}
-          {{- end }}
-          {{- if $.Values.fleet.enabled }}
-          - path: /api/fleet
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "todea.fleet.name" $ }}
-                port:
-                  number: {{ $.Values.fleet.service.port }}
-          {{- end }}
-          {{- if $.Values.spaceport.enabled }}
-          - path: /api/spaceport
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "todea.spaceport.name" $ }}
-                port:
-                  number: {{ $.Values.spaceport.service.port }}
-          {{- end }}
           {{- if $.Values.mcp.enabled }}
           - path: /mcp
             pathType: Prefix
@@ -64,7 +37,15 @@ spec:
                 port:
                   number: {{ $.Values.mcp.service.port }}
           {{- end }}
-          {{- if $.Values.agentHub.enabled }}
+          {{- if $.Values.ollamaHub.enabled }}
+          - path: /chat
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "todea.ollamaHub.name" $ }}
+                port:
+                  number: {{ $.Values.ollamaHub.service.port }}
+          {{- else if $.Values.agentHub.enabled }}
           - path: /chat
             pathType: Prefix
             backend:

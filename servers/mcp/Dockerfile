@@ -18,8 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py ./server.py
 COPY http_utils.py ./http_utils.py
-COPY topic_tracker ./topic_tracker
-COPY workspace_agent ./workspace_agent
+COPY linkerd_agent ./linkerd_agent
 
 ENV MCP_PORT=3002
 

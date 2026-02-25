@@ -1,0 +1,85 @@
+{{- if .Values.ollamaRuntime.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todea.ollamaRuntime.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama
+spec:
+  replicas: {{ .Values.ollamaRuntime.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "todea.ollamaRuntime.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "todea.ollamaRuntime.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ollamaRuntime.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ollamaRuntime.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ollamaRuntime.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ollama
+          image: "{{ .Values.ollamaRuntime.image.repository }}:{{ .Values.ollamaRuntime.image.tag }}"
+          imagePullPolicy: {{ .Values.ollamaRuntime.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ollamaRuntime.service.port }}
+              protocol: TCP
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+          {{- if .Values.ollamaRuntime.model }}
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    until OLLAMA_HOST=http://localhost:{{ .Values.ollamaRuntime.service.port }} ollama list > /dev/null 2>&1; do
+                      sleep 2
+                    done
+                    OLLAMA_HOST=http://localhost:{{ .Values.ollamaRuntime.service.port }} ollama pull {{ .Values.ollamaRuntime.model }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /api/version
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/version
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+          resources:
+            {{- toYaml .Values.ollamaRuntime.resources | nindent 12 }}
+      volumes:
+        - name: models
+{{- if .Values.ollamaRuntime.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "todea.ollamaRuntime.name" . }}-pvc
+{{- else }}
+          emptyDir: {}
+{{- end }}
+{{- end }}

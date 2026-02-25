@@ -1,0 +1,18 @@
+{{- if .Values.ollamaHub.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "todea.ollamaHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ollama-hub
+spec:
+  type: {{ .Values.ollamaHub.service.type }}
+  ports:
+    - port: {{ .Values.ollamaHub.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "todea.ollamaHub.selectorLabels" . | nindent 4 }}
+{{- end }}

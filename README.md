@@ -1,6 +1,6 @@
 # Todea-Assistant
 
-Kubernetes-native AI demo platform with a React chat UI powered by Google Gemini to inspect and analyze a Linkerd service mesh through natural language via MCP agents.
+Kubernetes-native AI demo platform with a React chat UI for inspecting a Linkerd service mesh through natural language. Supports Google Gemini (via ADK) or a fully in-cluster Ollama runtime — no cloud API key required for the Ollama path.
 
 ![Screenshot of the Todea-Assistant demo](assets/sample.png)
 
@@ -13,8 +13,10 @@ Todea-Assistant is composed of the following services:
 | Service | Path | Port | Role |
 |---|---|---|---|
 | **Web** | `web/` | 80 | React SPA + Express static server |
-| **Agent Hub** | `servers/agent-hub/` | 3100 | LLM agent orchestrator (Google Gemini via ADK) |
+| **Agent Hub** | `servers/agent-hub/` | 3100 | LLM orchestrator (Google Gemini via ADK) + MCP client |
 | **MCP Server** | `servers/mcp/` | 3002 | FastMCP tool server with a Linkerd CLI agent |
+| **Ollama Hub** _(optional)_ | `servers/ollama-hub/` | 3200 | Drop-in chat gateway for Ollama models (no Google key) |
+| **Ollama Runtime** _(optional)_ | — | 11434 | In-cluster `ollama/ollama` pod pulled from Docker Hub |
 
 ### Service map
 
@@ -26,21 +28,23 @@ Browser
 Ingress (Traefik)
   ├── /              → todea-web          :80    React SPA + Express
   ├── /mcp           → todea-mcp          :3002  MCP agent server
-  └── /chat          → todea-agent-hub    :3100  LLM agent orchestrator
+  └── /chat          → todea-agent-hub    :3100  Gemini path (default)
+                       todea-ollama-hub   :3200  Ollama path (ollamaHub.enabled=true)
 ```
 
 ### Call graph
 
+**Gemini path** (requires `GOOGLE_API_KEY`):
 ```
-React UI
-  └── POST /chat  ──► Agent Hub (Gemini ADK)
-                          │
-                          ▼
-                      MCP Server
-                      └── linkerd_agent  ──► linkerd CLI (subprocess)
-                                                  │
-                                                  └── Kubernetes cluster (Linkerd)
+React UI  ──► Agent Hub (Gemini ADK)  ──► MCP Server  ──► linkerd CLI  ──► Kubernetes
 ```
+
+**Ollama path** (no API key required):
+```
+React UI  ──► Ollama Hub  ──► Ollama Runtime (in-cluster or external)
+```
+
+The Ollama path does not broker MCP tool calls — it is direct chat with the model.
 
 ### Coupling table
 
@@ -48,7 +52,7 @@ React UI
 |---|---|---|
 | Agent Hub | MCP Server | yes — chat unavailable |
 | MCP Server | `linkerd` CLI | yes — all tools fail |
-| `linkerd` CLI | Kubernetes cluster | yes — commands return errors |
+| Ollama Hub | Ollama Runtime | yes — chat unavailable |
 
 ---
 
@@ -70,37 +74,31 @@ linkerd viz install | kubectl apply -f -
 linkerd check
 ```
 
-### 3. Build and import images
+### 3. Choose a path
+
+#### Path A — Google Gemini
+
+Build and import images:
 
 ```bash
 docker build -t todea-web:local           ./web
 docker build -t todea-mcp:local           ./servers/mcp
 docker build -t todea-agent-hub:local     ./servers/agent-hub
-```
 
-Import them into the k3d cluster:
-
-```bash
 k3d image import --cluster todea \
   todea-web:local \
   todea-mcp:local \
   todea-agent-hub:local
 ```
 
-> **Note:** k3d's image store is isolated from the host Docker daemon. Run `k3d image import` every time you rebuild, then restart the affected deployment with `kubectl rollout restart deployment/<name> -n todea`.
-
-### 4. Deploy with Helm
+Deploy:
 
 ```bash
 helm upgrade --install todea ./helm/todea \
-  --namespace todea \
-  --create-namespace \
-  --set web.image.repository=todea-web \
-  --set web.image.tag=local \
-  --set mcp.image.repository=todea-mcp \
-  --set mcp.image.tag=local \
-  --set agentHub.image.repository=todea-agent-hub \
-  --set agentHub.image.tag=local \
+  --namespace todea --create-namespace \
+  --set web.image.repository=todea-web      --set web.image.tag=local \
+  --set mcp.image.repository=todea-mcp     --set mcp.image.tag=local \
+  --set agentHub.image.repository=todea-agent-hub --set agentHub.image.tag=local \
   --set agentHub.googleApiKey=<YOUR-GOOGLE-API-KEY> \
   --set mcp.googleApiKey=<YOUR-GOOGLE-API-KEY> \
   --set web.ingress.enabled=true \
@@ -109,10 +107,127 @@ helm upgrade --install todea ./helm/todea \
   --set 'web.ingress.hosts[0].paths[0].pathType=Prefix'
 ```
 
-Open **http://localhost:8080** or port-forward directly:
+#### Path B — Ollama (no API key)
+
+Build and import the Ollama Hub image. The `ollama/ollama` runtime is pulled directly from Docker Hub by the cluster — no local build needed.
+
+```bash
+docker build -t todea-web:local           ./web
+docker build -t todea-mcp:local           ./servers/mcp
+docker build -t todea-ollama-hub:local    ./servers/ollama-hub
+
+k3d image import --cluster todea \
+  todea-web:local \
+  todea-mcp:local \
+  todea-ollama-hub:local
+```
+
+> **Tip — speed up the first deploy:** By default k3d pulls `ollama/ollama` from Docker Hub at deploy time, which can be slow. Pre-pull it into the cluster's image store first:
+> ```bash
+> docker pull ollama/ollama:latest
+> k3d image import ollama/ollama:latest -c todea
+> ```
+
+Deploy:
+
+```bash
+helm upgrade --install todea ./helm/todea \
+  --namespace todea --create-namespace \
+  --set web.image.repository=todea-web     --set web.image.tag=local \
+  --set mcp.image.repository=todea-mcp    --set mcp.image.tag=local \
+  --set agentHub.enabled=false \
+  --set ollamaHub.enabled=true \
+  --set ollamaHub.image.repository=todea-ollama-hub --set ollamaHub.image.tag=local \
+  --set ollamaRuntime.enabled=true \
+  --set ollamaRuntime.model=llama3.2 \
+  --set ollamaRuntime.persistence.enabled=true \
+  --set ollamaRuntime.persistence.size=10Gi \
+  --set web.ingress.enabled=true \
+  --set 'web.ingress.hosts[0].host=localhost' \
+  --set 'web.ingress.hosts[0].paths[0].path=/' \
+  --set 'web.ingress.hosts[0].paths[0].pathType=Prefix'
+```
+
+The `ollama/ollama` pod pulls `llama3.2` automatically on startup via a `postStart` hook. The Ollama Hub pod stays `0/1` until the model is ready. Follow progress:
+
+```bash
+kubectl -n todea get pod -w
+kubectl -n todea logs deploy/todea-ollama -f
+```
+
+### 4. Open the UI
+
+```bash
+open http://localhost:8080
+```
+
+Or port-forward if not using an ingress:
 
 ```bash
 kubectl -n todea port-forward svc/todea-web 8080:80
+```
+
+> **Note:** k3d's image store is isolated from the host Docker daemon. Run `k3d image import` every time you rebuild a local image, then restart the affected deployment:
+> ```bash
+> kubectl rollout restart deployment/<name> -n todea
+> ```
+
+---
+
+## Updating an existing deployment
+
+Use `--reuse-values` to carry forward all current settings and only override what you specify:
+
+```bash
+# Example: enable in-cluster Ollama on a running deployment
+helm upgrade todea ./helm/todea \
+  --namespace todea \
+  --reuse-values \
+  --set ollamaRuntime.enabled=true \
+  --set ollamaRuntime.model=llama3.2 \
+  --set ollamaRuntime.persistence.enabled=true \
+  --set ollamaRuntime.persistence.size=10Gi
+```
+
+```bash
+# Example: switch model
+helm upgrade todea ./helm/todea \
+  --namespace todea \
+  --reuse-values \
+  --set ollamaHub.agentModel=mistral \
+  --set ollamaRuntime.model=mistral
+```
+
+---
+
+## Ollama in Kubernetes — reference
+
+### Model management
+
+The chart pulls `ollamaRuntime.model` automatically on pod startup. To pull additional models or trigger a pull manually:
+
+```bash
+kubectl exec -n todea deploy/todea-ollama -- ollama pull mistral
+```
+
+### Persistence
+
+Without `ollamaRuntime.persistence.enabled=true` models are stored in an `emptyDir` and re-downloaded on every pod restart. Enable persistence to keep the model cache:
+
+```bash
+--set ollamaRuntime.persistence.enabled=true \
+--set ollamaRuntime.persistence.size=10Gi
+```
+
+k3d uses the `local-path` storage class by default, which works out of the box.
+
+### Pointing at an external Ollama
+
+If you prefer to run Ollama on the host rather than in-cluster, skip `ollamaRuntime` and point the hub at the host:
+
+```bash
+--set ollamaRuntime.enabled=false \
+--set ollamaHub.ollamaHost=http://host.docker.internal:11434
 ```
 
 ---
@@ -120,7 +235,6 @@ kubectl -n todea port-forward svc/todea-web 8080:80
 ## Rebuilding a single service
 
 ```bash
-# Example: rebuild the MCP server after a code change
 docker build -t todea-mcp:local ./servers/mcp
 k3d image import todea-mcp:local -c todea
 kubectl rollout restart deployment/todea-mcp -n todea
@@ -130,21 +244,17 @@ kubectl rollout restart deployment/todea-mcp -n todea
 
 ## Local development (without k3d)
 
-You need the Agent Hub and MCP server running locally. API URLs are read from environment variables — copy `.env.example` files in each service directory and fill in your keys.
-
 ### React front-end (`web/client`)
 
 ```bash
 cd web/client
 yarn install
-yarn start
+yarn start        # http://localhost:3000
 ```
-
-Visit http://localhost:3000.
 
 ### MCP agent server (`servers/mcp`)
 
-Hosts the FastMCP server and the `linkerd_agent` Google ADK agent. Requires the `linkerd` CLI to be installed and configured to reach a cluster.
+Requires the `linkerd` CLI installed and configured to reach a cluster.
 
 ```bash
 cd servers/mcp
@@ -153,8 +263,6 @@ pip install -r requirements.txt
 python3 server.py
 ```
 
-Environment variables:
-
 | Variable | Default | Description |
 |---|---|---|
 | `GOOGLE_API_KEY` | _(required)_ | Google GenAI API key |
@@ -162,33 +270,23 @@ Environment variables:
 | `AGENT_MODEL` | `gemini-2.0-flash` | Gemini model for ADK agents |
 | `MCP_ALLOW_ORIGINS` | `http://localhost:3000` | Comma-separated CORS origins |
 
-To exercise the agent with the Google ADK web harness:
+To exercise the agent interactively:
 
 ```bash
-cd servers/mcp
-adk web
+adk web   # opens the Google ADK web harness
 ```
 
-Try queries like:
-- "Is Linkerd healthy?"
-- "Show me traffic stats for all deployments"
-- "What are the top requests hitting the web deployment?"
-- "Are all service connections using mTLS?"
-- "Show me the certificate identity for pod foo-abc in the default namespace"
+Try: "Is Linkerd healthy?", "Show me traffic stats for all deployments", "Are all connections using mTLS?"
 
 ### Agent Hub (`servers/agent-hub`)
-
-Translates chat requests from the React UI to Google Gemini and routes tool calls through the MCP server.
 
 ```bash
 cd servers/agent-hub
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env  # fill in GOOGLE_API_KEY
+cp .env.example .env   # fill in GOOGLE_API_KEY
 uvicorn app:app --port 3100
 ```
-
-Environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -197,27 +295,50 @@ Environment variables:
 | `AGENT_MODEL_GOOGLE` | `gemini-2.0-flash` | Gemini model to use |
 | `PORT` | `3100` | Port to listen on |
 
+### Ollama Hub (`servers/ollama-hub`)
+
+Requires an Ollama server with at least one model pulled.
+
+```bash
+# Start ollama locally
+ollama serve &
+ollama pull llama3.2
+
+cd servers/ollama-hub
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # adjust OLLAMA_HOST if needed
+uvicorn app:app --port 3200
+```
+
+Point the React UI at it: `REACT_APP_AGENT_HUB_URL=http://localhost:3200/chat yarn start`
+
+| Variable | Default | Description |
+|---|---|---|
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server base URL |
+| `AGENT_MODEL_OLLAMA` | `llama3.2` | Default model |
+| `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
+| `PORT` | `3200` | Port to listen on |
+
 ---
 
 ## Concepts
 
 ### Linkerd agent
 
-The `linkerd_agent` is the root MCP agent. It runs `linkerd` CLI commands as subprocesses to inspect any aspect of a Kubernetes cluster running the Linkerd service mesh.
-
-Available tools:
+The `linkerd_agent` runs `linkerd` CLI commands as subprocesses to inspect any aspect of a cluster running Linkerd.
 
 | Tool | CLI command | Description |
 |---|---|---|
 | `linkerd_check` | `linkerd check` | Verify Linkerd control-plane and data-plane health |
-| `viz_stat` | `linkerd viz stat` | Aggregate traffic stats (RPS, success rate, latency) for a resource |
-| `viz_top` | `linkerd viz top` | Point-in-time snapshot of top requests to a resource |
+| `viz_stat` | `linkerd viz stat` | Aggregate traffic stats (RPS, success rate, latency) |
+| `viz_top` | `linkerd viz top` | Point-in-time snapshot of top requests |
 | `viz_routes` | `linkerd viz routes` | Per-route traffic metrics (requires a ServiceProfile) |
 | `viz_edges` | `linkerd viz edges` | mTLS edge connectivity between services |
 | `identity` | `linkerd identity` | TLS certificate identity for a pod's proxy |
-| `diagnostics_proxy_metrics` | `linkerd diagnostics proxy-metrics` | Raw Prometheus metrics from a pod's sidecar proxy |
+| `diagnostics_proxy_metrics` | `linkerd diagnostics proxy-metrics` | Raw Prometheus metrics from a sidecar proxy |
 
-All tools accept an optional `namespace` argument. `viz_stat` and `viz_edges` also accept `all_namespaces=true` to query the entire cluster.
+All tools accept an optional `namespace` argument. `viz_stat` and `viz_edges` also accept `all_namespaces=true`.
 
 ---
 

@@ -32,24 +32,20 @@ Create component specific fullnames.
 {{- include "todea.componentName" (dict "root" . "component" "web") -}}
 {{- end -}}
 
-{{- define "todea.universe.name" -}}
-{{- include "todea.componentName" (dict "root" . "component" "universe") -}}
-{{- end -}}
-
-{{- define "todea.fleet.name" -}}
-{{- include "todea.componentName" (dict "root" . "component" "fleet") -}}
-{{- end -}}
-
-{{- define "todea.spaceport.name" -}}
-{{- include "todea.componentName" (dict "root" . "component" "spaceport") -}}
-{{- end -}}
-
 {{- define "todea.mcp.name" -}}
 {{- include "todea.componentName" (dict "root" . "component" "mcp") -}}
 {{- end -}}
 
 {{- define "todea.agentHub.name" -}}
 {{- include "todea.componentName" (dict "root" . "component" "agent-hub") -}}
+{{- end -}}
+
+{{- define "todea.ollamaHub.name" -}}
+{{- include "todea.componentName" (dict "root" . "component" "ollama-hub") -}}
+{{- end -}}
+
+{{- define "todea.ollamaRuntime.name" -}}
+{{- include "todea.componentName" (dict "root" . "component" "ollama") -}}
 {{- end -}}
 
 {{/*
@@ -78,21 +74,6 @@ Component specific selector labels
 app.kubernetes.io/component: web
 {{- end -}}
 
-{{- define "todea.universe.selectorLabels" -}}
-{{ include "todea.selectorLabels" . }}
-app.kubernetes.io/component: universe
-{{- end -}}
-
-{{- define "todea.fleet.selectorLabels" -}}
-{{ include "todea.selectorLabels" . }}
-app.kubernetes.io/component: fleet
-{{- end -}}
-
-{{- define "todea.spaceport.selectorLabels" -}}
-{{ include "todea.selectorLabels" . }}
-app.kubernetes.io/component: spaceport
-{{- end -}}
-
 {{- define "todea.mcp.selectorLabels" -}}
 {{ include "todea.selectorLabels" . }}
 app.kubernetes.io/component: mcp
@@ -101,6 +82,16 @@ app.kubernetes.io/component: mcp
 {{- define "todea.agentHub.selectorLabels" -}}
 {{ include "todea.selectorLabels" . }}
 app.kubernetes.io/component: agent-hub
+{{- end -}}
+
+{{- define "todea.ollamaHub.selectorLabels" -}}
+{{ include "todea.selectorLabels" . }}
+app.kubernetes.io/component: ollama-hub
+{{- end -}}
+
+{{- define "todea.ollamaRuntime.selectorLabels" -}}
+{{ include "todea.selectorLabels" . }}
+app.kubernetes.io/component: ollama
 {{- end -}}
 
 {{- define "todea.mcp.secretName" -}}
