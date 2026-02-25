@@ -1,0 +1,38 @@
+{{- if .Values.web.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todea.web.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "todea.web.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "todea.web.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: web
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.service.port }}
+              protocol: TCP
+          env:
+            - name: REACT_APP_UNIVERSE_API_BASE_URL
+              value: {{ printf "http://%s:%d/api/universe" (include "todea.universe.name" .) (int .Values.universe.service.port) | quote }}
+            - name: REACT_APP_FLEET_API_BASE_URL
+              value: {{ printf "http://%s:%d/api/fleet" (include "todea.fleet.name" .) (int .Values.fleet.service.port) | quote }}
+            - name: REACT_APP_AGENT_HUB_URL
+              value: {{ printf "http://%s:%d/chat" (include "todea.agentHub.name" .) (int .Values.agentHub.service.port) | quote }}
+{{- end }}

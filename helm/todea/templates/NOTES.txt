@@ -1,0 +1,31 @@
+Thank you for deploying todea!
+
+Web gateway service: {{ include "todea.web.name" . }}
+{{- if and .Values.web.enabled (eq .Values.web.service.type "LoadBalancer") }}
+  - LoadBalancer: watch for the external IP via `kubectl get svc {{ include "todea.web.name" . }} -n {{ .Release.Namespace }}`
+{{- else if and .Values.web.enabled (eq .Values.web.service.type "NodePort") }}
+  - NodePort: access on your node IP at the allocated port shown with `kubectl get svc {{ include "todea.web.name" . }} -n {{ .Release.Namespace }}`
+{{- else if and .Values.web.enabled .Values.web.ingress.enabled }}
+  - Ingress: {{- range .Values.web.ingress.hosts }} http://{{ .host }} {{- end }}
+{{- else if .Values.web.enabled }}
+  - ClusterIP: use `kubectl port-forward svc/{{ include "todea.web.name" . }} 8080:{{ .Values.web.service.port }} -n {{ .Release.Namespace }}` and open http://localhost:8080
+{{- else }}
+  - Web gateway disabled in values
+{{- end }}
+
+Core services:
+{{- if .Values.universe.enabled }}
+  - Universe API: http://{{ include "todea.universe.name" . }}:{{ .Values.universe.service.port }}{{ .Values.universe.apiBasePath }} (ClusterIP)
+{{- end }}
+{{- if .Values.fleet.enabled }}
+  - Fleet API: http://{{ include "todea.fleet.name" . }}:{{ .Values.fleet.service.port }}{{ .Values.fleet.apiBasePath }} (ClusterIP)
+{{- end }}
+{{- if .Values.spaceport.enabled }}
+  - Spaceport runtime: http://{{ include "todea.spaceport.name" . }}:{{ .Values.spaceport.service.port }} (ClusterIP)
+{{- end }}
+{{- if .Values.mcp.enabled }}
+  - MCP agent: http://{{ include "todea.mcp.name" . }}:{{ .Values.mcp.service.port }}{{ .Values.mcp.apiPath }} (ClusterIP)
+{{- end }}
+{{- if .Values.agentHub.enabled }}
+  - Agent Hub runtime: http://{{ include "todea.agentHub.name" . }}:{{ .Values.agentHub.service.port }}{{ .Values.agentHub.apiPath }} (ClusterIP)
+{{- end }}

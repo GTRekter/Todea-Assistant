@@ -1,0 +1,18 @@
+.full-height-container {
+    min-height: calc(100vh - 190px); /* Account for nav + footer height */
+}
+
+.eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    font-size: 0.75rem;
+    color: #9cb3ff;
+}
+
+.panel-card {
+    background-color: rgba(12, 15, 24, 0.88);
+    border-radius: 1rem;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 1.5rem;
+    box-shadow: 0 20px 60px rgba(3, 6, 12, 0.65);
+}

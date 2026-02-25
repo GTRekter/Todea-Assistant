@@ -1,0 +1,41 @@
+{{- if .Values.fleet.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todea.fleet.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet
+spec:
+  replicas: {{ .Values.fleet.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "todea.fleet.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "todea.fleet.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "todea.fleet.name" . }}
+      containers:
+        - name: fleet
+          image: "{{ .Values.fleet.image.repository }}:{{ .Values.fleet.image.tag }}"
+          imagePullPolicy: {{ .Values.fleet.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.fleet.service.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "{{ .Values.fleet.service.port }}"
+            - name: FLEET_API_BASE_PATH
+              value: "/api/fleet"
+            {{- range $key, $value := .Values.fleet.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+{{- end }}

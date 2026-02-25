@@ -1,0 +1,47 @@
+{{- if .Values.agentHub.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todea.agentHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-hub
+spec:
+  replicas: {{ .Values.agentHub.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "todea.agentHub.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "todea.agentHub.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent-hub
+          image: "{{ .Values.agentHub.image.repository }}:{{ .Values.agentHub.image.tag }}"
+          imagePullPolicy: {{ .Values.agentHub.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.agentHub.service.port }}
+              protocol: TCP
+          env:
+            - name: MCP_SERVER_URL
+              value: {{ printf "http://%s:%d/mcp" (include "todea.mcp.name" .) (int .Values.mcp.service.port) | quote }}
+            - name: AGENT_MODEL_GOOGLE
+              value: {{ .Values.agentHub.agentModel | quote }}
+            {{- if and .Values.agentHub.googleApiKey .Values.agentHub.enabled }}
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "todea.agentHub.secretName" . }}
+                  key: google-api-key
+            {{- end }}
+            {{- range $key, $value := .Values.agentHub.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+{{- end }}

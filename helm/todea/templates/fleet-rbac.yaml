@@ -1,0 +1,43 @@
+{{- if .Values.fleet.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "todea.fleet.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "todea.fleet.name" . }}-logs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "todea.fleet.name" . }}-logs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "todea.fleet.name" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "todea.fleet.name" . }}-logs
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

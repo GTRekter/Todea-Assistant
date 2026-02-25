@@ -29,8 +29,18 @@ pnpm-debug.log*
 .env
 .env.local
 .env.*.local
+.envrc
+.npmrc
 
 # Misc
 *.log
 *.tmp
 *.cache
+
+# Keys / certs / kube
+*.pem
+*.key
+*.crt
+*.der
+*.p12
+*.kubeconfig

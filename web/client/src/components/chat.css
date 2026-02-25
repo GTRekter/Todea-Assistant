@@ -1,0 +1,105 @@
+.chat-layout {
+    min-height: 60vh;
+}
+
+.conversation-sidebar {
+    height: 100%;
+    background: linear-gradient(180deg, rgba(19, 24, 36, 0.95) 0%, rgba(12, 15, 24, 0.95) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.conversation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 65vh;
+    overflow-y: auto;
+}
+
+.conversation-item {
+    width: 100%;
+    text-align: left;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid transparent;
+    color: #f8f9fa;
+    border-radius: 12px;
+    padding: 0.75rem 0.85rem;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.conversation-item:hover {
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.conversation-item.active {
+    border-color: var(--bs-primary);
+    background: rgba(86, 112, 255, 0.12);
+}
+
+.conversation-title {
+    font-weight: 600;
+}
+
+.conversation-meta {
+    line-height: 1.2;
+}
+
+.conversation-actions .icon-btn {
+    background: transparent;
+    border: none;
+    color: #9fb0d3;
+    padding: 0.2rem;
+}
+
+.conversation-actions .icon-btn:hover {
+    color: #fff;
+}
+
+.chat-shell {
+    min-height: 60vh;
+    border-radius: 13px;
+    display: flex;
+}
+
+.chat-body {
+    max-height: 50vh;
+}
+
+.chat-message-bubble {
+    max-width: 75%;
+    border-radius: 13px;
+}
+
+.chat-bubble-user {
+    background-color: var(--bs-primary);
+    color: #fff;
+}
+
+.chat-bubble-assistant {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: #f8f9fa;
+}
+
+.chat-input-area {
+    background-color: rgba(18, 21, 28, 0.95);
+    border-radius: 13px;
+}
+
+.chat-input::placeholder {
+    color: rgba(248, 249, 250, 0.65);
+}
+
+.chat-input {
+    background: transparent;
+    color: #f8f9fa;
+    resize: none;
+}
+
+.chat-input:focus {
+    box-shadow: none;
+}
+
+.chat-btn {
+    width: 2.5rem;
+    height: 2.5rem;
+}
