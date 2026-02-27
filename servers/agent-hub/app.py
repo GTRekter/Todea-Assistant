@@ -1,11 +1,16 @@
 import asyncio
 import json
+import logging
 import os
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from google.adk.agents import Agent as GoogleAgent
@@ -18,6 +23,7 @@ import httpx
 
 load_dotenv()
 
+ALLOW_ORIGINS = [origin.strip() for origin in os.getenv("ALLOW_ORIGINS", "*").split(",") if origin.strip()]
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:3002/mcp")
 CONVERSATION_HUB_URL = os.getenv("CONVERSATION_HUB_URL", "http://localhost:3300")
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "todea")
@@ -42,16 +48,32 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY"
 GOOGLE_VERTEX_PROJECT = os.getenv("GOOGLE_VERTEX_PROJECT") or os.getenv("VERTEX_PROJECT")
 GOOGLE_VERTEX_LOCATION = os.getenv("GOOGLE_VERTEX_LOCATION") or os.getenv("VERTEX_LOCATION")
 
-DEFAULT_INSTRUCTION = (
-    "You are the todea workspace assistant. Think out loud, then call MCP tools "
-    "to answer the user's request about channels, hot topics, and workspace settings. "
-    "Return a concise final answer after tools complete."
+DEFAULT_INSTRUCTION = os.getenv(
+    "DEFAULT_INSTRUCTION",
+    (
+        "You are the Todea workspace assistant. Think out loud, then answer concisely.\n"
+        "You have tools for managing Buoyant Enterprise Linkerd (BEL) on Kubernetes.\n\n"
+        "TOOL CALL RULES — follow these exactly:\n"
+        "- Status / health check: call 'linkerd_check' or 'helm_status'. No arguments needed for linkerd_check.\n"
+        "- Install Linkerd: follow this sequence in order, stop on any error:\n"
+        "    1. helm_repo_add                — call with NO arguments (defaults are correct)\n"
+        "    2. install_gateway_api_crds     — pass 'version' (e.g. '2.19.4')\n"
+        "    3. helm_install_linkerd_crds    — pass 'version'\n"
+        "    4. install_linkerd_control_plane — pass 'version' and 'license_key' ONLY\n"
+        "    5. linkerd_check                — call with NO arguments to verify\n"
+        "NEVER call generate_certificates or helm_install_linkerd_control_plane directly during an install — use install_linkerd_control_plane instead.\n"
+        "Before starting an install, ask the user for the BEL version and license key if not provided.\n"
+        "- Upgrade Linkerd: call helm_repo_add (no args), then helm_upgrade_linkerd.\n"
+        "- Uninstall: call helm_status first to discover release names, then helm_uninstall_linkerd.\n\n"
+        "NEVER call helm_*, linkerd_*, install_*, or generate_* tools in a different order than shown above.\n"
+        "When calling any tool with no required arguments, pass an empty argument list."
+    ),
 )
 
 app = FastAPI(title="Agent Hub Service")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOW_ORIGINS or ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -134,6 +156,14 @@ class ConversationHubClient:
                 json={"role": role, "content": content},
             )
             resp.raise_for_status()
+
+    async def get_messages(self, conversation_id: str) -> List[Dict[str, Any]]:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{self._base}/conversations/{conversation_id}/messages")
+            if resp.status_code == 404:
+                return []
+            resp.raise_for_status()
+            return resp.json()
 
     async def list(self) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
@@ -275,6 +305,63 @@ async def run_agent_chat(message: str, session_id: str, model: str) -> str:
     return final_response or "The agent did not return any text."
 
 
+async def stream_agent_chat(message: str, session_id: str, model: str) -> AsyncIterator[Dict[str, Any]]:
+    """Async generator that yields SSE-style event dicts as the agent processes a request.
+
+    Event types:
+      {"type": "thinking",    "content": "<model text>"}
+      {"type": "tool_call",   "name": "<tool>", "args": {}}
+      {"type": "tool_result", "name": "<tool>", "content": "<output>"}
+      {"type": "done",        "content": "<final answer>"}
+      {"type": "error",       "content": "<message>"}
+    """
+    try:
+        runner = get_runner(model)
+    except RuntimeError as exc:
+        yield {"type": "error", "content": str(exc)}
+        return
+
+    await ensure_session(session_id)
+
+    final_response = ""
+    user_message = types.Content(role="user", parts=[types.Part(text=message)])
+
+    try:
+        async for event in runner.run_async(
+            user_id="web-ui",
+            session_id=session_id,
+            new_message=user_message,
+        ):
+            if not event.content or not event.content.parts:
+                continue
+
+            for part in event.content.parts:
+                if getattr(part, "text", None):
+                    if event.is_final_response():
+                        final_response = part.text
+                    else:
+                        yield {"type": "thinking", "content": part.text}
+
+                elif getattr(part, "function_call", None):
+                    fc = part.function_call
+                    args = dict(fc.args) if fc.args else {}
+                    logger.info("Tool call: %s args=%s", fc.name, args)
+                    yield {"type": "tool_call", "name": fc.name, "args": args}
+
+                elif getattr(part, "function_response", None):
+                    fr = part.function_response
+                    response_text = str(fr.response) if fr.response is not None else ""
+                    logger.info("Tool result: %s", fr.name)
+                    yield {"type": "tool_result", "name": fr.name, "content": response_text}
+
+    except Exception as exc:
+        logger.warning("stream_agent_chat error: %s", exc)
+        yield {"type": "error", "content": str(exc)}
+        return
+
+    yield {"type": "done", "content": final_response or "The agent did not return any text."}
+
+
 @app.get("/models")
 async def list_models() -> Dict[str, Any]:
     return {"models": GOOGLE_MODELS, "default": GOOGLE_MODEL}
@@ -306,6 +393,39 @@ async def chat(request: ChatRequest) -> ChatResponse:
     await conv_client.append_message(session_id, "assistant", content)
 
     return ChatResponse(content=content, provider=PROVIDER_ID, session_id=session_id)
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest) -> StreamingResponse:
+    message = (request.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="A message is required.")
+
+    model = (request.model or GOOGLE_MODEL).strip() or GOOGLE_MODEL
+    if model not in GOOGLE_MODELS:
+        raise HTTPException(status_code=400, detail=f"Unknown model '{model}'. Available: {GOOGLE_MODELS}")
+
+    session_id = (request.session_id or f"default-{PROVIDER_ID}").strip() or f"default-{PROVIDER_ID}"
+    await conv_client.ensure(session_id, model=model)
+
+    final_content: Dict[str, str] = {"value": ""}
+
+    async def event_generator():
+        async for event in stream_agent_chat(message, session_id, model):
+            if event.get("type") == "done":
+                final_content["value"] = event.get("content", "")
+            yield f"data: {json.dumps(event)}\n\n"
+        try:
+            await conv_client.append_message(session_id, "user", message)
+            await conv_client.append_message(session_id, "assistant", final_content["value"])
+        except Exception as exc:
+            logger.warning("Failed to save conversation after stream: %s", exc)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------------------------------------------------------------------------

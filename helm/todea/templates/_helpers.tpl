@@ -52,6 +52,10 @@ Create component specific fullnames.
 {{- include "todea.componentName" (dict "root" . "component" "conversation-hub") -}}
 {{- end -}}
 
+{{- define "todea.helmAgent.name" -}}
+{{- include "todea.componentName" (dict "root" . "component" "helm-agent") -}}
+{{- end -}}
+
 {{/*
 Default labels shared by objects.
 */}}
@@ -101,6 +105,11 @@ app.kubernetes.io/component: ollama
 {{- define "todea.conversationHub.selectorLabels" -}}
 {{ include "todea.selectorLabels" . }}
 app.kubernetes.io/component: conversation-hub
+{{- end -}}
+
+{{- define "todea.helmAgent.selectorLabels" -}}
+{{ include "todea.selectorLabels" . }}
+app.kubernetes.io/component: helm-agent
 {{- end -}}
 
 {{- define "todea.mcp.secretName" -}}

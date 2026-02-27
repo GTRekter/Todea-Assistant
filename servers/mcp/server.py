@@ -8,7 +8,9 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 from linkerd_agent.agent import root_agent as linkerd_agent  # type: ignore
 from linkerd_agent import tools as linkerd_tools  # type: ignore
-from linkerd_agent.tools import BEL_HELM_REPO, BEL_HELM_REPO_URL
+from openssl_agent import tools as openssl_tools  # type: ignore
+from kubernetes_agent import tools as k8s_tools  # type: ignore
+from linkerd_agent.tools import BEL_HELM_REPO, BEL_HELM_REPO_URL, helm_configure_linkerd as _helm_configure_linkerd
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
@@ -151,31 +153,112 @@ def install_gateway_api_crds(version: str) -> str:
 
 @mcp.tool
 def generate_certificates(
-    trust_anchor_cert: str = "ca.crt",
-    trust_anchor_key: str = "ca.key",
-    issuer_cert: str = "issuer.crt",
-    issuer_key: str = "issuer.key",
     trust_anchor_lifetime: str = "87600h",
     issuer_lifetime: str = "8760h",
 ) -> str:
     """
-    Generate a trust anchor and issuer certificate pair for BEL using the step CLI.
+    Generate a Linkerd-compatible trust anchor and issuer certificate pair.
 
-    trust_anchor_cert: output path for the trust anchor certificate (default: ca.crt).
-    trust_anchor_key: output path for the trust anchor private key (default: ca.key).
-    issuer_cert: output path for the issuer certificate (default: issuer.crt).
-    issuer_key: output path for the issuer private key (default: issuer.key).
+    Uses the Python 'cryptography' library — no external binary required.
+    Returns JSON with 'ca_cert_pem', 'issuer_cert_pem', and 'issuer_key_pem' fields
+    containing the PEM content ready to pass to helm_install_linkerd_control_plane
+    or helm_upgrade_linkerd.
+
     trust_anchor_lifetime: validity period for the trust anchor (default: 87600h / 10 years).
     issuer_lifetime: validity period for the issuer certificate (default: 8760h / 1 year).
     """
-    return linkerd_tools.generate_certificates(
-        trust_anchor_cert=trust_anchor_cert,
-        trust_anchor_key=trust_anchor_key,
-        issuer_cert=issuer_cert,
-        issuer_key=issuer_key,
+    return openssl_tools.generate_certificates(
         trust_anchor_lifetime=trust_anchor_lifetime,
         issuer_lifetime=issuer_lifetime,
     )
+
+
+@mcp.tool
+def inspect_certificate(pem_content: str) -> str:
+    """
+    Parse and display details of a PEM-encoded X.509 certificate.
+
+    Returns JSON with: subject, issuer, serial_number, not_before, not_after,
+    days_remaining, is_expired, is_ca, path_length, subject_alternative_names,
+    and signature_algorithm.
+
+    pem_content: the PEM string of the certificate to inspect.
+    """
+    return openssl_tools.inspect_certificate(pem_content=pem_content)
+
+
+@mcp.tool
+def verify_certificate_chain(ca_cert_pem: str, cert_pem: str) -> str:
+    """
+    Verify that cert_pem was signed by the CA in ca_cert_pem.
+
+    Returns JSON with: valid_signature, error, issuer_matches_ca,
+    cert_not_expired, ca_not_expired.
+
+    Useful for confirming a Linkerd trust-anchor / issuer pair is valid before
+    passing them to helm_install_linkerd_control_plane.
+
+    ca_cert_pem: PEM string of the CA (trust anchor) certificate.
+    cert_pem: PEM string of the certificate to verify (e.g. issuer cert).
+    """
+    return openssl_tools.verify_certificate_chain(
+        ca_cert_pem=ca_cert_pem,
+        cert_pem=cert_pem,
+    )
+
+
+@mcp.tool
+def install_linkerd_control_plane(
+    version: str,
+    license_key: str,
+    namespace: str = "linkerd",
+) -> str:
+    """
+    Generate certificates and install the Linkerd Enterprise control plane in one step.
+
+    This composite tool runs generate_certificates followed by
+    helm_install_linkerd_control_plane internally so the model never has to
+    copy large PEM strings between tool calls.
+
+    Call this INSTEAD of calling generate_certificates and
+    helm_install_linkerd_control_plane separately.
+
+    version: the BEL Helm chart version (e.g. '2.19.4').
+    license_key: the Buoyant Enterprise Linkerd license key (BUOYANT_LICENSE).
+    namespace: target namespace (default: linkerd).
+    """
+    import json as _json
+
+    certs_raw = openssl_tools.generate_certificates()
+    try:
+        certs = _json.loads(certs_raw)
+    except Exception as exc:
+        return _json.dumps({"error": f"Certificate generation failed: {exc}"}, indent=4)
+    if "error" in certs:
+        return certs_raw
+
+    install_result = linkerd_tools.helm_install_linkerd_control_plane(
+        version=version,
+        license_key=license_key,
+        ca_cert_pem=certs["ca_cert_pem"],
+        issuer_cert_pem=certs["issuer_cert_pem"],
+        issuer_key_pem=certs["issuer_key_pem"],
+        namespace=namespace,
+    )
+
+    try:
+        install_data = _json.loads(install_result)
+    except Exception:
+        install_data = install_result
+
+    return _json.dumps({
+        "certificates": {
+            "ca_cert_pem": certs["ca_cert_pem"],
+            "issuer_cert_pem": certs["issuer_cert_pem"],
+            "issuer_key_pem": certs["issuer_key_pem"],
+        },
+        "install": install_data,
+    }, indent=4)
 
 
 @mcp.tool
@@ -193,9 +276,9 @@ def helm_install_linkerd_crds(version: str, namespace: str = "linkerd") -> str:
 def helm_install_linkerd_control_plane(
     version: str,
     license_key: str,
-    ca_cert: str = "ca.crt",
-    issuer_cert: str = "issuer.crt",
-    issuer_key: str = "issuer.key",
+    ca_cert_pem: str,
+    issuer_cert_pem: str,
+    issuer_key_pem: str,
     namespace: str = "linkerd",
 ) -> str:
     """
@@ -203,17 +286,17 @@ def helm_install_linkerd_control_plane(
 
     version: the BEL Helm chart version (e.g. 'enterprise-2.19.4').
     license_key: the Buoyant Enterprise Linkerd license key (BUOYANT_LICENSE).
-    ca_cert: path to the trust anchor certificate file (default: ca.crt).
-    issuer_cert: path to the issuer certificate file (default: issuer.crt).
-    issuer_key: path to the issuer private key file (default: issuer.key).
+    ca_cert_pem: PEM content of the trust anchor certificate.
+    issuer_cert_pem: PEM content of the issuer certificate.
+    issuer_key_pem: PEM content of the issuer private key.
     namespace: target namespace (default: linkerd).
     """
     return linkerd_tools.helm_install_linkerd_control_plane(
         version=version,
         license_key=license_key,
-        ca_cert=ca_cert,
-        issuer_cert=issuer_cert,
-        issuer_key=issuer_key,
+        ca_cert_pem=ca_cert_pem,
+        issuer_cert_pem=issuer_cert_pem,
+        issuer_key_pem=issuer_key_pem,
         namespace=namespace,
     )
 
@@ -222,9 +305,9 @@ def helm_install_linkerd_control_plane(
 def helm_upgrade_linkerd(
     version: str,
     license_key: str,
-    ca_cert: str = "ca.crt",
-    issuer_cert: str = "issuer.crt",
-    issuer_key: str = "issuer.key",
+    ca_cert_pem: str,
+    issuer_cert_pem: str,
+    issuer_key_pem: str,
     namespace: str = "linkerd",
 ) -> str:
     """
@@ -232,19 +315,46 @@ def helm_upgrade_linkerd(
 
     version: the target BEL Helm chart version (e.g. 'enterprise-2.19.4').
     license_key: the Buoyant Enterprise Linkerd license key (BUOYANT_LICENSE).
-    ca_cert: path to the trust anchor certificate file (default: ca.crt).
-    issuer_cert: path to the issuer certificate file (default: issuer.crt).
-    issuer_key: path to the issuer private key file (default: issuer.key).
+    ca_cert_pem: PEM content of the trust anchor certificate.
+    issuer_cert_pem: PEM content of the issuer certificate.
+    issuer_key_pem: PEM content of the issuer private key.
     namespace: namespace where Linkerd is installed (default: linkerd).
     """
     return linkerd_tools.helm_upgrade_linkerd(
         version=version,
         license_key=license_key,
-        ca_cert=ca_cert,
-        issuer_cert=issuer_cert,
-        issuer_key=issuer_key,
+        ca_cert_pem=ca_cert_pem,
+        issuer_cert_pem=issuer_cert_pem,
+        issuer_key_pem=issuer_key_pem,
         namespace=namespace,
     )
+
+
+@mcp.tool
+def helm_configure_linkerd(
+    key: str,
+    value: str,
+    release: str = "linkerd-enterprise-control-plane",
+    namespace: str = "linkerd",
+) -> str:
+    """
+    Change a single Helm value on an existing BEL release without regenerating
+    certificates or re-supplying any other previously set value.
+
+    Uses 'helm upgrade --reuse-values --set key=value' so certs, license, and
+    all other existing values are preserved.  If the key was already set it is
+    correctly overridden by the new value.
+
+    Common keys:
+      controllerLogLevel  — control-plane log verbosity (e.g. 'debug', 'info', 'warn')
+      proxy.logLevel      — data-plane proxy verbosity (e.g. 'warn,linkerd=info')
+
+    key: Helm value key in dot-notation (e.g. 'controllerLogLevel').
+    value: the new value to set (e.g. 'debug').
+    release: Helm release name (default: 'linkerd-enterprise-control-plane').
+    namespace: namespace of the release (default: linkerd).
+    """
+    return _helm_configure_linkerd(key=key, value=value, release=release, namespace=namespace)
 
 
 @mcp.tool
@@ -279,6 +389,128 @@ def linkerd_check(proxy: bool = False) -> str:
     proxy: if True, also validate data-plane proxy health (linkerd check --proxy).
     """
     return linkerd_tools.linkerd_check(proxy=proxy)
+
+
+# ---------------------------------------------------------------------------
+# Kubernetes diagnostic tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool
+def get_namespaces() -> str:
+    """List all namespaces in the cluster."""
+    return k8s_tools.get_namespaces()
+
+
+@mcp.tool
+def get_nodes() -> str:
+    """List all nodes with status, roles, and Kubernetes version."""
+    return k8s_tools.get_nodes()
+
+
+@mcp.tool
+def get_pods(namespace: str = "") -> str:
+    """
+    List pods with status, restart counts, and node assignment.
+
+    namespace: target namespace. Leave empty to list pods across all namespaces.
+    """
+    return k8s_tools.get_pods(namespace=namespace)
+
+
+@mcp.tool
+def get_deployments(namespace: str = "") -> str:
+    """
+    List deployments with desired / ready / available replica counts.
+
+    namespace: target namespace. Leave empty to list across all namespaces.
+    """
+    return k8s_tools.get_deployments(namespace=namespace)
+
+
+@mcp.tool
+def get_pod_containers(pod: str, namespace: str) -> str:
+    """
+    List all container names in a pod (init containers excluded).
+
+    Useful to know which container name to pass to get_pod_logs before
+    fetching logs for a multi-container pod.
+
+    pod: pod name.
+    namespace: namespace the pod is in.
+    """
+    return k8s_tools.get_pod_containers(pod=pod, namespace=namespace)
+
+
+@mcp.tool
+def get_pod_logs(
+    pod: str,
+    namespace: str,
+    container: str = "",
+    previous: bool = False,
+    tail_lines: int = 100,
+) -> str:
+    """
+    Fetch logs from a container in a pod.
+
+    pod: pod name.
+    namespace: namespace the pod is in.
+    container: container name. Required when the pod has more than one container;
+               call get_pod_containers first if unsure.
+    previous: if True, fetch logs from the previous (crashed) container instance.
+    tail_lines: number of log lines to return from the end (default: 100).
+    """
+    return k8s_tools.get_pod_logs(
+        pod=pod,
+        namespace=namespace,
+        container=container,
+        previous=previous,
+        tail_lines=tail_lines,
+    )
+
+
+@mcp.tool
+def describe_pod(pod: str, namespace: str) -> str:
+    """
+    Run 'kubectl describe pod' to show full pod spec, conditions, and events.
+
+    Includes the Events section which is the primary source for diagnosing
+    probe failures, image pull errors, and scheduling issues.
+
+    pod: pod name.
+    namespace: namespace the pod is in.
+    """
+    return k8s_tools.describe_pod(pod=pod, namespace=namespace)
+
+
+@mcp.tool
+def get_events(namespace: str, pod_name: str = "") -> str:
+    """
+    List events in a namespace, sorted by timestamp.
+
+    namespace: namespace to query.
+    pod_name: optional pod name to filter events to a single pod.
+    """
+    return k8s_tools.get_events(namespace=namespace, pod_name=pod_name)
+
+
+@mcp.tool
+def diagnose_pod_restarts(pod: str, namespace: str) -> str:
+    """
+    Composite diagnostic for a crashing or restarting pod.
+
+    Runs in a single call:
+      1. Lists containers in the pod
+      2. Fetches current and previous logs for each container (last 50 lines)
+      3. Fetches pod events filtered to this pod
+
+    Returns a JSON object with keys: pod, namespace, containers, logs, events.
+    Use this as the first tool when investigating a CrashLoopBackOff or
+    unexpected restart — it avoids multiple round trips.
+
+    pod: pod name.
+    namespace: namespace the pod is in.
+    """
+    return k8s_tools.diagnose_pod_restarts(pod=pod, namespace=namespace)
 
 
 if __name__ == "__main__":

@@ -3,13 +3,14 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
     faArrowUp,
     faChevronDown,
+    faChevronUp,
     faPlus,
     faTrash,
     faPen,
 } from '@fortawesome/free-solid-svg-icons';
 import './chat.css';
 import {
-    sendChatRequest,
+    streamChatRequest,
     getModels,
     listConversations,
     createConversation,
@@ -17,6 +18,43 @@ import {
     renameConversation,
     deleteConversation,
 } from '../services/agentHubApi';
+
+function ThinkingBlock({ steps }) {
+    const [expanded, setExpanded] = useState(false);
+    const count = steps.length;
+    return (
+        <div className="thinking-block mb-2">
+            <button
+                type="button"
+                className="thinking-header"
+                onClick={() => setExpanded((prev) => !prev)}
+                aria-expanded={expanded}
+            >
+                <FontAwesomeIcon icon={expanded ? faChevronUp : faChevronDown} className="thinking-chevron" />
+                <span>Thinking · {count} step{count !== 1 ? 's' : ''}</span>
+            </button>
+            {expanded && (
+                <div className="thinking-content d-flex flex-column gap-1">
+                    {steps.map((step, i) => {
+                        if (step.type === 'thinking') return (
+                            <p key={i} className="mb-0 small fst-italic text-secondary">{step.content}</p>
+                        );
+                        if (step.type === 'tool_call') return (
+                            <div key={i} className="d-flex align-items-center gap-1">
+                                <span className="badge bg-secondary">tool</span>
+                                <code className="small">{step.name}</code>
+                            </div>
+                        );
+                        if (step.type === 'tool_result') return (
+                            <pre key={i} className="mb-0 small p-2 rounded bg-black text-light" style={{ maxHeight: '10rem', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>{step.content}</pre>
+                        );
+                        return null;
+                    })}
+                </div>
+            )}
+        </div>
+    );
+}
 
 const initialMessages = [
     {
@@ -232,19 +270,41 @@ export default function Chat() {
             });
 
             try {
-                const content = await sendChatRequest({
+                const steps = [];
+                await streamChatRequest({
                     message: userContent,
                     provider: selectedProvider,
                     sessionId: conversationId,
                     model: selectedModel,
-                });
-                setMessagesByConversation((prev) => {
-                    const updated = (prev[conversationId] || []).map((m) =>
-                        m.id === placeholderId
-                            ? { ...m, content: content || 'The assistant did not return any text.', placeholder: false }
-                            : m
-                    );
-                    return { ...prev, [conversationId]: updated };
+                    onEvent: (event) => {
+                        if (event.type === 'done') {
+                            setMessagesByConversation((prev) => {
+                                const updated = (prev[conversationId] || []).map((m) =>
+                                    m.id === placeholderId
+                                        ? { ...m, content: event.content || 'The assistant did not return any text.', placeholder: false, steps: [...steps] }
+                                        : m
+                                );
+                                return { ...prev, [conversationId]: updated };
+                            });
+                        } else if (event.type === 'error') {
+                            setMessagesByConversation((prev) => {
+                                const updated = (prev[conversationId] || []).map((m) =>
+                                    m.id === placeholderId
+                                        ? { ...m, content: `Error: ${event.content}`, placeholder: false, steps: [...steps] }
+                                        : m
+                                );
+                                return { ...prev, [conversationId]: updated };
+                            });
+                        } else {
+                            steps.push(event);
+                            setMessagesByConversation((prev) => {
+                                const updated = (prev[conversationId] || []).map((m) =>
+                                    m.id === placeholderId ? { ...m, steps: [...steps] } : m
+                                );
+                                return { ...prev, [conversationId]: updated };
+                            });
+                        }
+                    },
                 });
             } catch (error) {
                 console.error('Failed to process chat request', error);
@@ -285,13 +345,13 @@ export default function Chat() {
         const trimmed = inputValue.trim();
         if (!trimmed || isSending) return;
         setIsSending(true);
+        setInputValue('');
         let targetConversationId = activeConversationId;
         if (!targetConversationId) {
             const created = await createAndActivateConversation();
             targetConversationId = created.id;
         }
         await executeChat(trimmed, targetConversationId);
-        setInputValue('');
     };
 
     const handleKeyDown = (event) => {
@@ -438,7 +498,15 @@ export default function Chat() {
                                 className={`d-flex ${message.role === 'user' ? 'justify-content-end' : 'justify-content-start'}`}
                             >
                                 <div className={`px-3 py-2 chat-message-bubble ${message.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}>
-                                    {message.content}
+                                    {message.steps?.length > 0 && (
+                                        <ThinkingBlock steps={message.steps} />
+                                    )}
+                                    {message.placeholder && !message.steps?.length && (
+                                        <span className="text-secondary fst-italic small">Thinking with {selectedModel}…</span>
+                                    )}
+                                    {message.content && (
+                                        <div>{message.content}</div>
+                                    )}
                                 </div>
                             </div>
                         ))}
@@ -458,14 +526,6 @@ export default function Chat() {
                             />
                         </div>
                         <div className="d-flex flex-wrap justify-content-end align-items-center gap-2">
-                            <button
-                                type="button"
-                                className="btn btn-outline-light"
-                                onClick={handleNewConversationClick}
-                                disabled={isSending}
-                            >
-                                New conversation
-                            </button>
                             <button
                                 type="submit"
                                 className="btn btn-light rounded-circle d-flex align-items-center justify-content-center chat-btn"

@@ -1,0 +1,25 @@
+# Core (always needed)
+requests>=2.31.0
+
+# DeepWiki / website scraping
+beautifulsoup4>=4.12.0
+html2text>=2024.2.26
+
+# Optional: only needed if pages are JS-rendered
+# pip install playwright && playwright install chromium
+# playwright>=1.40.0
+
+# ─── Fine-tuning (finetune.py) ────────────────────────────────────────────────
+# Install separately after the base requirements:
+#   pip install torch transformers peft trl accelerate datasets
+#
+# torch install varies by platform — see https://pytorch.org/get-started/locally/
+#   Mac (MPS):  pip install torch torchvision torchaudio
+#   CUDA 12.1:  pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+# CUDA only — 4-bit quantization + fast optimizer:
+#   pip install bitsandbytes
+#
+# HuggingFace login required for the default Llama 3.1 model:
+#   pip install huggingface_hub
+#   huggingface-cli login

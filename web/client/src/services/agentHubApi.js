@@ -37,6 +37,50 @@ export async function sendChatRequest({ message, provider, sessionId, model }) {
     return data?.content || '';
 }
 
+export async function streamChatRequest({ message, provider, sessionId, model, onEvent }) {
+    const trimmed = (message || '').trim();
+    if (!trimmed) throw new Error('A message is required.');
+
+    const payload = {
+        message: trimmed,
+        provider: provider || 'google',
+        session_id: sessionId || undefined,
+        model: model || undefined,
+    };
+
+    const response = await fetch(`${AGENT_HUB_BASE_URL}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `Agent Hub error (${response.status})`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep any incomplete line
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                try {
+                    onEvent(JSON.parse(line.slice(6)));
+                } catch (_) {
+                    // ignore malformed lines
+                }
+            }
+        }
+    }
+}
+
 export async function saveSettings({ googleApiKey }) {
     const response = await fetch(`${AGENT_HUB_BASE_URL}/settings`, {
         method: 'POST',

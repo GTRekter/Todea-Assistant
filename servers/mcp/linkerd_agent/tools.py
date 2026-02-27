@@ -1,11 +1,16 @@
 import json
+import os
 import re
 import subprocess
 
-CLI_TIMEOUT = 120  # seconds — Helm installs can take time
+import httpx
+
+CLI_TIMEOUT = 120  # seconds — for step/linkerd CLIs only
 
 BEL_HELM_REPO = "linkerd-buoyant"
 BEL_HELM_REPO_URL = "https://helm.buoyant.cloud"
+
+HELM_AGENT_URL = os.getenv("HELM_AGENT_URL", "http://localhost:3400")
 
 # Gateway API CRD manifests differ between BEL major versions:
 #   2.18 → experimental-install.yaml (v1.1.1) — transition release
@@ -18,6 +23,10 @@ _GATEWAY_API_DEFAULT = _GATEWAY_API_MANIFESTS["2.19"]
 
 BEL_RELEASE_NOTES_URL = "https://docs.buoyant.io/buoyant-enterprise-linkerd/{minor}/release-notes/"
 
+
+# ---------------------------------------------------------------------------
+# Local subprocess helper — only used for step and linkerd CLIs
+# ---------------------------------------------------------------------------
 
 def _run(*cmd: str, timeout: int = CLI_TIMEOUT) -> str:
     """Execute a shell command and return the output as a string."""
@@ -45,6 +54,46 @@ def _run(*cmd: str, timeout: int = CLI_TIMEOUT) -> str:
         }, indent=4)
 
 
+# ---------------------------------------------------------------------------
+# Helm agent HTTP helpers
+# ---------------------------------------------------------------------------
+
+def _check_error(data: dict) -> None:
+    """Raise RuntimeError if the helm-agent response contains an error."""
+    if isinstance(data, dict) and "error" in data:
+        msg = data["error"]
+        stderr = data.get("stderr", "")
+        raise RuntimeError(f"{msg}" + (f"\nstderr: {stderr}" if stderr else ""))
+
+
+def _helm_get(path: str, params: dict | None = None) -> str:
+    try:
+        resp = httpx.get(f"{HELM_AGENT_URL}{path}", params=params, timeout=CLI_TIMEOUT)
+        data = resp.json()
+        _check_error(data)
+        return json.dumps(data, indent=4)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Helm agent unreachable: {exc}")
+
+
+def _helm_post(path: str, payload: dict) -> str:
+    try:
+        resp = httpx.post(f"{HELM_AGENT_URL}{path}", json=payload, timeout=CLI_TIMEOUT)
+        data = resp.json()
+        _check_error(data)
+        return json.dumps(data, indent=4)
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Helm agent unreachable: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Version helpers
+# ---------------------------------------------------------------------------
+
 def _major_minor(version: str) -> str:
     """Extract 'X.Y' from strings like 'enterprise-2.19.4' or '2.19.4'."""
     m = re.search(r"(\d+\.\d+)", version)
@@ -70,6 +119,10 @@ def _gateway_api_manifest_url(version: str) -> str:
     return _GATEWAY_API_MANIFESTS.get(mm, _GATEWAY_API_DEFAULT)
 
 
+# ---------------------------------------------------------------------------
+# Tools — BEL-specific logic lives here; helm agent receives generic params
+# ---------------------------------------------------------------------------
+
 def helm_search_bel_versions(minor: str = "") -> str:
     """
     List available BEL chart versions from the Helm repo.
@@ -85,29 +138,19 @@ def helm_search_bel_versions(minor: str = "") -> str:
 
     The first entry when filtered by minor is the latest available patch.
     """
-    result = _run(
-        "helm", "search", "repo",
-        f"{BEL_HELM_REPO}/linkerd-enterprise-control-plane",
-        "--versions", "--output", "json",
+    raw = _helm_get(
+        "/helm/search",
+        {"chart": f"{BEL_HELM_REPO}/linkerd-enterprise-control-plane", "minor": minor},
     )
     try:
-        versions = json.loads(result)
-        if not isinstance(versions, list):
-            return result
+        data = json.loads(raw)
+        versions = data.get("versions", [])
         for entry in versions:
             mm = _major_minor(entry.get("version", ""))
             entry["release_notes_url"] = BEL_RELEASE_NOTES_URL.format(minor=mm) if mm else ""
-        if minor:
-            filtered = [v for v in versions if _major_minor(v.get("version", "")) == minor]
-            if not filtered:
-                return json.dumps({
-                    "error": f"No BEL versions found for minor '{minor}'.",
-                    "available_minors": sorted({_major_minor(v.get("version", "")) for v in versions}, reverse=True),
-                }, indent=4)
-            return json.dumps(filtered, indent=4)
-        return json.dumps(versions, indent=4)
+        return json.dumps(data, indent=4)
     except (json.JSONDecodeError, ValueError):
-        return result
+        return raw
 
 
 def helm_repo_add(repo_name: str = BEL_HELM_REPO, repo_url: str = BEL_HELM_REPO_URL) -> str:
@@ -117,9 +160,7 @@ def helm_repo_add(repo_name: str = BEL_HELM_REPO, repo_url: str = BEL_HELM_REPO_
     repo_name: local alias for the repo (default: 'linkerd-buoyant').
     repo_url: Helm repo URL (default: https://helm.buoyant.cloud).
     """
-    add = _run("helm", "repo", "add", repo_name, repo_url, "--force-update")
-    update = _run("helm", "repo", "update", repo_name)
-    return f"repo add:\n{add}\n\nrepo update:\n{update}"
+    return _helm_post("/helm/repo/add", {"repo_name": repo_name, "repo_url": repo_url})
 
 
 def install_gateway_api_crds(version: str) -> str:
@@ -133,51 +174,61 @@ def install_gateway_api_crds(version: str) -> str:
     version: the BEL version being installed (e.g. 'enterprise-2.19.4' or '2.18.7').
     """
     url = _gateway_api_manifest_url(version)
-    result = _run("kubectl", "apply", "-f", url)
+    result = _helm_post("/kubectl/apply", {"url": url})
     return f"Gateway API CRDs ({url}):\n{result}"
 
 
 def generate_certificates(
-    trust_anchor_cert: str = "ca.crt",
-    trust_anchor_key: str = "ca.key",
-    issuer_cert: str = "issuer.crt",
-    issuer_key: str = "issuer.key",
     trust_anchor_lifetime: str = "87600h",
     issuer_lifetime: str = "8760h",
 ) -> str:
     """
     Generate a trust anchor and issuer certificate pair for BEL using the step CLI.
+    Returns the PEM content of the generated certificates so they can be passed
+    directly to helm_install_linkerd_control_plane or helm_upgrade_linkerd.
 
-    trust_anchor_cert: output path for the trust anchor certificate (default: ca.crt).
-    trust_anchor_key: output path for the trust anchor private key (default: ca.key).
-    issuer_cert: output path for the issuer certificate (default: issuer.crt).
-    issuer_key: output path for the issuer private key (default: issuer.key).
     trust_anchor_lifetime: validity period for the trust anchor (default: 87600h / 10 years).
     issuer_lifetime: validity period for the issuer certificate (default: 8760h / 1 year).
     """
-    anchor_result = _run(
-        "step", "certificate", "create",
-        "root.linkerd.cluster.local", trust_anchor_cert, trust_anchor_key,
-        "--profile", "root-ca",
-        "--no-password", "--insecure",
-        "--not-after", trust_anchor_lifetime,
-    )
-    try:
-        parsed = json.loads(anchor_result)
-        if "error" in parsed:
-            return f"Trust anchor generation failed:\n{anchor_result}"
-    except json.JSONDecodeError:
-        pass  # plain text success output
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ca_crt = os.path.join(tmpdir, "ca.crt")
+        ca_key = os.path.join(tmpdir, "ca.key")
+        iss_crt = os.path.join(tmpdir, "issuer.crt")
+        iss_key = os.path.join(tmpdir, "issuer.key")
 
-    issuer_result = _run(
-        "step", "certificate", "create",
-        "identity.linkerd.cluster.local", issuer_cert, issuer_key,
-        "--profile", "intermediate-ca",
-        "--not-after", issuer_lifetime,
-        "--no-password", "--insecure",
-        "--ca", trust_anchor_cert, "--ca-key", trust_anchor_key,
-    )
-    return f"Trust anchor:\n{anchor_result}\n\nIssuer certificate:\n{issuer_result}"
+        anchor_result = _run(
+            "step", "certificate", "create",
+            "root.linkerd.cluster.local", ca_crt, ca_key,
+            "--profile", "root-ca",
+            "--no-password", "--insecure",
+            "--not-after", trust_anchor_lifetime,
+        )
+        try:
+            if "error" in json.loads(anchor_result):
+                return json.dumps({"error": "Trust anchor generation failed.", "detail": anchor_result}, indent=4)
+        except json.JSONDecodeError:
+            pass
+
+        issuer_result = _run(
+            "step", "certificate", "create",
+            "identity.linkerd.cluster.local", iss_crt, iss_key,
+            "--profile", "intermediate-ca",
+            "--not-after", issuer_lifetime,
+            "--no-password", "--insecure",
+            "--ca", ca_crt, "--ca-key", ca_key,
+        )
+        try:
+            if "error" in json.loads(issuer_result):
+                return json.dumps({"error": "Issuer cert generation failed.", "detail": issuer_result}, indent=4)
+        except json.JSONDecodeError:
+            pass
+
+        return json.dumps({
+            "ca_cert_pem": open(ca_crt).read(),
+            "issuer_cert_pem": open(iss_crt).read(),
+            "issuer_key_pem": open(iss_key).read(),
+        }, indent=4)
 
 
 def helm_install_linkerd_crds(version: str, namespace: str = "linkerd") -> str:
@@ -187,22 +238,21 @@ def helm_install_linkerd_crds(version: str, namespace: str = "linkerd") -> str:
     version: the BEL Helm chart version (e.g. '2.19.4' or 'enterprise-2.19.4').
     namespace: target namespace (created if it does not exist).
     """
-    cv = _chart_version(version)
-    return _run(
-        "helm", "upgrade", "--install", "linkerd-enterprise-crds",
-        f"{BEL_HELM_REPO}/linkerd-enterprise-crds",
-        "--version", cv,
-        "--namespace", namespace,
-        "--create-namespace",
-    )
+    return _helm_post("/helm/upgrade-install", {
+        "release_name": "linkerd-enterprise-crds",
+        "chart": f"{BEL_HELM_REPO}/linkerd-enterprise-crds",
+        "version": _chart_version(version),
+        "namespace": namespace,
+        "create_namespace": True,
+    })
 
 
 def helm_install_linkerd_control_plane(
     version: str,
     license_key: str,
-    ca_cert: str = "ca.crt",
-    issuer_cert: str = "issuer.crt",
-    issuer_key: str = "issuer.key",
+    ca_cert_pem: str,
+    issuer_cert_pem: str,
+    issuer_key_pem: str,
     namespace: str = "linkerd",
 ) -> str:
     """
@@ -210,30 +260,31 @@ def helm_install_linkerd_control_plane(
 
     version: the BEL Helm chart version (e.g. '2.19.4' or 'enterprise-2.19.4').
     license_key: the Buoyant Enterprise Linkerd license key (BUOYANT_LICENSE).
-    ca_cert: path to the trust anchor certificate file (default: ca.crt).
-    issuer_cert: path to the issuer certificate file (default: issuer.crt).
-    issuer_key: path to the issuer private key file (default: issuer.key).
+    ca_cert_pem: PEM content of the trust anchor certificate.
+    issuer_cert_pem: PEM content of the issuer certificate.
+    issuer_key_pem: PEM content of the issuer private key.
     namespace: target namespace (default: linkerd).
     """
-    cv = _chart_version(version)
-    return _run(
-        "helm", "upgrade", "--install", "linkerd-enterprise-control-plane",
-        f"{BEL_HELM_REPO}/linkerd-enterprise-control-plane",
-        "--version", cv,
-        "--namespace", namespace,
-        "--set", f"license={license_key}",
-        "--set-file", f"identityTrustAnchorsPEM={ca_cert}",
-        "--set-file", f"identity.issuer.tls.crtPEM={issuer_cert}",
-        "--set-file", f"identity.issuer.tls.keyPEM={issuer_key}",
-    )
+    return _helm_post("/helm/upgrade-install", {
+        "release_name": "linkerd-enterprise-control-plane",
+        "chart": f"{BEL_HELM_REPO}/linkerd-enterprise-control-plane",
+        "version": _chart_version(version),
+        "namespace": namespace,
+        "set_values": {"license": license_key},
+        "set_file_values": {
+            "identityTrustAnchorsPEM": ca_cert_pem,
+            "identity.issuer.tls.crtPEM": issuer_cert_pem,
+            "identity.issuer.tls.keyPEM": issuer_key_pem,
+        },
+    })
 
 
 def helm_upgrade_linkerd(
     version: str,
     license_key: str,
-    ca_cert: str = "ca.crt",
-    issuer_cert: str = "issuer.crt",
-    issuer_key: str = "issuer.key",
+    ca_cert_pem: str,
+    issuer_cert_pem: str,
+    issuer_key_pem: str,
     namespace: str = "linkerd",
 ) -> str:
     """
@@ -241,29 +292,63 @@ def helm_upgrade_linkerd(
 
     version: the target BEL Helm chart version (e.g. '2.19.4' or 'enterprise-2.19.4').
     license_key: the Buoyant Enterprise Linkerd license key (BUOYANT_LICENSE).
-    ca_cert: path to the trust anchor certificate file (default: ca.crt).
-    issuer_cert: path to the issuer certificate file (default: issuer.crt).
-    issuer_key: path to the issuer private key file (default: issuer.key).
+    ca_cert_pem: PEM content of the trust anchor certificate.
+    issuer_cert_pem: PEM content of the issuer certificate.
+    issuer_key_pem: PEM content of the issuer private key.
     namespace: namespace where Linkerd is installed (default: linkerd).
     """
-    cv = _chart_version(version)
-    crds = _run(
-        "helm", "upgrade", "linkerd-enterprise-crds",
-        f"{BEL_HELM_REPO}/linkerd-enterprise-crds",
-        "--version", cv,
-        "--namespace", namespace,
-    )
-    cp = _run(
-        "helm", "upgrade", "linkerd-enterprise-control-plane",
-        f"{BEL_HELM_REPO}/linkerd-enterprise-control-plane",
-        "--version", cv,
-        "--namespace", namespace,
-        "--set", f"license={license_key}",
-        "--set-file", f"identityTrustAnchorsPEM={ca_cert}",
-        "--set-file", f"identity.issuer.tls.crtPEM={issuer_cert}",
-        "--set-file", f"identity.issuer.tls.keyPEM={issuer_key}",
-    )
+    crds = _helm_post("/helm/upgrade-install", {
+        "release_name": "linkerd-enterprise-crds",
+        "chart": f"{BEL_HELM_REPO}/linkerd-enterprise-crds",
+        "version": _chart_version(version),
+        "namespace": namespace,
+    })
+    cp = _helm_post("/helm/upgrade-install", {
+        "release_name": "linkerd-enterprise-control-plane",
+        "chart": f"{BEL_HELM_REPO}/linkerd-enterprise-control-plane",
+        "version": _chart_version(version),
+        "namespace": namespace,
+        "set_values": {"license": license_key},
+        "set_file_values": {
+            "identityTrustAnchorsPEM": ca_cert_pem,
+            "identity.issuer.tls.crtPEM": issuer_cert_pem,
+            "identity.issuer.tls.keyPEM": issuer_key_pem,
+        },
+    })
     return f"CRDs upgrade:\n{crds}\n\nControl-plane upgrade:\n{cp}"
+
+
+def helm_configure_linkerd(
+    key: str,
+    value: str,
+    release: str = "linkerd-enterprise-control-plane",
+    namespace: str = "linkerd",
+) -> str:
+    """
+    Change a single Helm value on an existing BEL release without regenerating
+    certificates or re-supplying any other previously set value.
+
+    Uses 'helm upgrade --reuse-values --set key=value' so certs, license, and
+    all other existing values are preserved.  If the key was already set to a
+    different value it is correctly overridden.
+
+    Common use-cases:
+      key="controllerLogLevel", value="debug"        → enable debug logging
+      key="controllerLogLevel", value="info"         → revert to info
+      key="proxy.logLevel",     value="warn,linkerd=info"
+
+    key: Helm value key in dot-notation (e.g. 'controllerLogLevel').
+    value: the new value to set (e.g. 'debug').
+    release: Helm release name (default: 'linkerd-enterprise-control-plane').
+    namespace: namespace of the release (default: linkerd).
+    """
+    chart = f"{BEL_HELM_REPO}/{release}"
+    return _helm_post("/helm/configure", {
+        "release_name": release,
+        "chart": chart,
+        "namespace": namespace,
+        "set_values": {key: value},
+    })
 
 
 def helm_uninstall_linkerd(
@@ -283,8 +368,14 @@ def helm_uninstall_linkerd(
     If you are unsure of the release names, call helm_status first — it will
     list all available releases in the namespace when the default is not found.
     """
-    cp = _run("helm", "uninstall", control_plane_release, "--namespace", namespace)
-    crds = _run("helm", "uninstall", crds_release, "--namespace", namespace)
+    cp = _helm_post("/helm/uninstall", {
+        "release_name": control_plane_release,
+        "namespace": namespace,
+    })
+    crds = _helm_post("/helm/uninstall", {
+        "release_name": crds_release,
+        "namespace": namespace,
+    })
     return f"control-plane ({control_plane_release}):\n{cp}\n\nCRDs ({crds_release}):\n{crds}"
 
 
@@ -298,25 +389,13 @@ def helm_status(
     release: the Helm release name (default: 'linkerd-enterprise-control-plane').
     namespace: namespace where the release is installed (default: linkerd).
     """
-    result = _run("helm", "status", release, "--namespace", namespace, "--output", "json")
-    try:
-        parsed = json.loads(result)
-        if "error" in parsed:
-            available = _run("helm", "list", "--namespace", namespace, "--output", "json")
-            return json.dumps({
-                "error": f"Release '{release}' not found in namespace '{namespace}'.",
-                "hint": "Use the correct release name from 'available_releases' and retry.",
-                "available_releases": json.loads(available) if available else [],
-            }, indent=4)
-    except (json.JSONDecodeError, ValueError):
-        pass
-    return result
+    return _helm_get("/helm/status", {"release": release, "namespace": namespace})
 
 
 def linkerd_check(proxy: bool = False, namespace: str = "linkerd") -> str:
     """
     Run 'linkerd check' to verify the BEL installation health.
-    Falls back to 'kubectl get pods' when the linkerd CLI is not installed.
+    Falls back to kubectl get pods (via helm agent) when the linkerd CLI is not installed.
 
     proxy: if True, also validate data-plane proxy health (linkerd check --proxy).
     namespace: namespace to inspect when falling back to kubectl (default: linkerd).
@@ -328,7 +407,7 @@ def linkerd_check(proxy: bool = False, namespace: str = "linkerd") -> str:
     try:
         parsed = json.loads(result)
         if "error" in parsed and "not found" in parsed.get("error", ""):
-            pods = _run("kubectl", "get", "pods", "-n", namespace, "-o", "wide")
+            pods = _helm_get("/kubectl/pods", {"namespace": namespace})
             return json.dumps({
                 "warning": "'linkerd' CLI not found; showing kubectl pod status as a fallback.",
                 "namespace": namespace,

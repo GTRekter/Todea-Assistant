@@ -1,4 +1,6 @@
+cryptography
 fastmcp
 google-adk
+httpx
 python-dotenv
 uvicorn

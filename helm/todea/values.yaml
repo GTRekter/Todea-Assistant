@@ -89,20 +89,38 @@ conversationHub:
   allowOrigins: "*"
   env: {}
 
+# Helm Agent (runs helm/kubectl on behalf of the MCP server) -----------------
+helmAgent:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: todea-helm-agent
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3400
+  allowOrigins: "*"
+  env:
+    LOG_LEVEL: DEBUG
+
 # In-cluster Ollama runtime (optional) ---------------------------------------
 ollamaRuntime:
   enabled: false
   replicaCount: 1
   image:
-    repository: ollama/ollama
-    tag: latest
+    # Use a custom image with the model pre-baked (see servers/ollama-runtime/Dockerfile).
+    # Build: docker build -t todea-ollama-runtime:local ./servers/ollama-runtime
+    # Import: k3d image import todea-ollama-runtime:local -c <cluster-name>
+    repository: todea-ollama-runtime
+    tag: local
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
     port: 11434
-  # Model to pull automatically on first startup (empty string to skip).
-  # Without persistence, the model is re-downloaded every time the pod restarts.
-  model: "llama3.1:8b"
+  # Set to the model name to pull it at pod startup (postStart hook).
+  # Leave empty when using a pre-baked image — the model is already on disk.
+  model: ""
   persistence:
     enabled: false           # true to keep model cache between restarts
     size: 10Gi

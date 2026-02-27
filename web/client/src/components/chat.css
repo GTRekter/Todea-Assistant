@@ -103,3 +103,38 @@
     width: 2.5rem;
     height: 2.5rem;
 }
+
+.thinking-block {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    width: 100%;
+    background: rgba(255, 255, 255, 0.04);
+    border: none;
+    color: #9ca3af;
+    font-size: 0.78rem;
+    padding: 0.35rem 0.65rem;
+    cursor: pointer;
+    text-align: left;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.thinking-header:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #d1d5db;
+}
+
+.thinking-chevron {
+    font-size: 0.6rem;
+}
+
+.thinking-content {
+    padding: 0.5rem 0.65rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}

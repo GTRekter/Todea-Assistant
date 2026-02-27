@@ -1,0 +1,18 @@
+{{- if .Values.helmAgent.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "todea.helmAgent.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: helm-agent
+spec:
+  type: {{ .Values.helmAgent.service.type }}
+  ports:
+    - port: {{ .Values.helmAgent.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "todea.helmAgent.selectorLabels" . | nindent 4 }}
+{{- end }}

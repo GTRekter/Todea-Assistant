@@ -16,6 +16,7 @@ spec:
       labels:
         {{- include "todea.mcp.selectorLabels" . | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "todea.mcp.name" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -41,6 +42,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "todea.mcp.secretName" . }}
                   key: google-api-key
+            {{- end }}
+            {{- if .Values.helmAgent.enabled }}
+            - name: HELM_AGENT_URL
+              value: {{ printf "http://%s:%d" (include "todea.helmAgent.name" .) (int .Values.helmAgent.service.port) | quote }}
             {{- end }}
             {{- range $key, $value := .Values.mcp.env }}
             - name: {{ $key }}

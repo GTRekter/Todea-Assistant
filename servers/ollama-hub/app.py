@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastmcp import Client as MCPClient
 from pydantic import BaseModel, Field
@@ -34,11 +35,23 @@ PROVIDER_ID = "ollama"
 DEFAULT_INSTRUCTION = os.getenv(
     "DEFAULT_INSTRUCTION",
     (
-        "You are the Todea workspace assistant. Think out loud, then answer concisely. "
-        "You have tools available for managing Linkerd and Kubernetes. "
-        "When the user asks you to install, upgrade, uninstall, check, or configure Linkerd "
-        "or its components, you MUST call the appropriate tool rather than describing steps. "
-        "Always call tools when they are relevant to the user's request."
+        "You are the Todea workspace assistant. Think out loud, then answer concisely.\n"
+        "You have tools for managing Buoyant Enterprise Linkerd (BEL) on Kubernetes.\n\n"
+        "TOOL CALL RULES — follow these exactly:\n"
+        "- Status / health check: call 'linkerd_check' or 'helm_status'. No arguments needed for linkerd_check.\n"
+        "- Install Linkerd: follow this sequence in order, stop on any error:\n"
+        "    1. helm_repo_add                — call with NO arguments (defaults are correct)\n"
+        "    2. install_gateway_api_crds     — pass 'version' (e.g. '2.19.4')\n"
+        "    3. helm_install_linkerd_crds    — pass 'version'\n"
+        "    4. install_linkerd_control_plane — pass 'version' and 'license_key' ONLY\n"
+        "    5. linkerd_check                — call with NO arguments to verify\n"
+        "NEVER call generate_certificates or helm_install_linkerd_control_plane directly during an install — use install_linkerd_control_plane instead.\n"
+        "Before starting an install, ask the user for the BEL version and license key if not provided.\n"
+        "- Upgrade Linkerd: call helm_repo_add (no args), then helm_upgrade_linkerd.\n"
+        "- Uninstall: call helm_status first to discover release names, then helm_uninstall_linkerd.\n\n"
+        "NEVER call helm_*, linkerd_*, install_*, or generate_* tools in a different order than shown above.\n"
+        "NEVER use the 'chat' tool.\n"
+        "When calling any tool with no required arguments, pass an empty argument list."
     ),
 )
 
@@ -223,6 +236,10 @@ async def _list_models(force: bool = False) -> List[str]:
     return _model_cache["names"]
 
 
+# Tools that Ollama should never call directly (they require Gemini or other infrastructure).
+_EXCLUDED_TOOLS = {"chat"}
+
+
 async def _list_mcp_tools(force: bool = False) -> List[Dict[str, Any]]:
     """Fetch the MCP tool list and convert to Ollama format. Cached for TOOL_REFRESH_SECONDS.
     Returns [] if the MCP server is unreachable (graceful degradation)."""
@@ -241,6 +258,7 @@ async def _list_mcp_tools(force: bool = False) -> List[Dict[str, Any]]:
                     },
                 }
                 for t in raw_tools
+                if t.name not in _EXCLUDED_TOOLS
             ]
             _tool_cache["ts"] = now
             logger.info("Loaded %d MCP tools from %s", len(_tool_cache["tools"]), MCP_SERVER_URL)
@@ -414,6 +432,33 @@ async def _extract_tool_call_via_model(
     return None
 
 
+def _strip_invalid_args(
+    fn_name: str,
+    fn_args: Dict[str, Any],
+    available_tools: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Remove argument keys not in the tool's JSON Schema to prevent Pydantic validation errors.
+
+    When a model passes wrong parameter names (e.g. 'repo-url' instead of 'repo_url'),
+    FastMCP raises an 'Unexpected keyword argument' error. Stripping the invalid keys
+    lets tools with all-optional parameters succeed with their defaults.
+    """
+    for t in available_tools:
+        if t["function"]["name"] == fn_name:
+            valid_props = set(t["function"].get("parameters", {}).get("properties", {}).keys())
+            if valid_props:
+                stripped = {k: v for k, v in fn_args.items() if k in valid_props}
+                if len(stripped) != len(fn_args):
+                    logger.info(
+                        "Stripped invalid args for tool '%s': %s",
+                        fn_name,
+                        set(fn_args) - valid_props,
+                    )
+                return stripped
+            break
+    return fn_args
+
+
 async def _history_for_session(session_id: str) -> List[Dict[str, str]]:
     messages = await conv_client.get_messages(session_id)
     return [{"role": m["role"], "content": m["content"]} for m in messages]
@@ -526,9 +571,10 @@ async def run_ollama_chat(message: str, session_id: str, model: str) -> str:
                 continue
             fn_name = resolved
 
+            fn_args = _strip_invalid_args(fn_name, fn_args or {}, tools_for_ollama)
             logger.info("Calling MCP tool '%s' with args: %s", fn_name, fn_args)
             try:
-                tool_result = await _call_mcp_tool(fn_name, fn_args or {})
+                tool_result = await _call_mcp_tool(fn_name, fn_args)
             except Exception as exc:
                 tool_result = f"Tool '{fn_name}' error: {exc}"
                 logger.warning("MCP tool '%s' error: %s", fn_name, exc)
@@ -546,6 +592,139 @@ async def run_ollama_chat(message: str, session_id: str, model: str) -> str:
         msg = getattr(final, "message", None)
         content = getattr(msg, "content", "") if msg else ""
     return str(content) if content else "Agent completed tool execution but produced no summary."
+
+
+async def stream_ollama_chat(message: str, session_id: str, model: str):
+    """Async generator that yields SSE-style event dicts as the tool-calling loop progresses.
+
+    Event types:
+      {"type": "thinking",    "content": "<model text>"}
+      {"type": "tool_call",   "name": "<tool>", "args": {}}
+      {"type": "tool_result", "name": "<tool>", "content": "<output>"}
+      {"type": "done",        "content": "<final answer>"}
+      {"type": "error",       "content": "<message>"}
+    """
+    history = await _history_for_session(session_id)
+    messages: List[Dict[str, Any]] = (
+        [{"role": "system", "content": DEFAULT_INSTRUCTION}]
+        + history
+        + [{"role": "user", "content": message}]
+    )
+
+    tools_for_ollama = await _list_mcp_tools()
+    if tools_for_ollama:
+        tool_names_hint = "Available tools (use EXACT names): " + ", ".join(
+            t["function"]["name"] for t in tools_for_ollama
+        )
+        messages[0]["content"] += "\n\n" + tool_names_hint
+
+    client = AsyncClient(host=OLLAMA_HOST)
+
+    for iteration in range(MAX_TOOL_ITERATIONS + 1):
+        try:
+            result = await client.chat(
+                model=model,
+                messages=messages,
+                tools=tools_for_ollama or None,
+                stream=False,
+            )
+        except Exception as exc:
+            yield {"type": "error", "content": str(exc)}
+            return
+
+        if isinstance(result, dict):
+            msg_obj = result.get("message", {})
+            tool_calls_raw = msg_obj.get("tool_calls") or []
+            content = msg_obj.get("content", "")
+            assistant_msg: Any = {"role": "assistant", "content": content}
+            if tool_calls_raw:
+                assistant_msg["tool_calls"] = tool_calls_raw
+        else:
+            msg_obj = getattr(result, "message", None)
+            tool_calls_raw = getattr(msg_obj, "tool_calls", None) or []
+            content = getattr(msg_obj, "content", "") or ""
+            assistant_msg = msg_obj
+
+        messages.append(assistant_msg)
+
+        if content:
+            yield {"type": "thinking", "content": content}
+
+        if not tool_calls_raw:
+            if iteration < MAX_TOOL_ITERATIONS:
+                inline = _extract_inline_tool_calls(content)
+                if inline:
+                    logger.info("Found %d inline tool call(s)", len(inline))
+                    tool_calls_raw = inline
+                    messages[-1] = {"role": "assistant", "content": "", "tool_calls": inline}
+
+                if not tool_calls_raw:
+                    extracted = await _extract_tool_call_via_model(content, tools_for_ollama, client, model)
+                    if extracted:
+                        resolved = _resolve_tool_name(extracted["function"]["name"], tools_for_ollama)
+                        if resolved:
+                            extracted["function"]["name"] = resolved
+                            tool_calls_raw = [extracted]
+                            messages[-1] = {"role": "assistant", "content": "", "tool_calls": tool_calls_raw}
+
+            if not tool_calls_raw:
+                if not content:
+                    yield {"type": "error", "content": "The model did not return any text."}
+                    return
+                yield {"type": "done", "content": content}
+                return
+
+        if iteration == MAX_TOOL_ITERATIONS:
+            logger.warning("MAX_TOOL_ITERATIONS (%d) reached for session %s.", MAX_TOOL_ITERATIONS, session_id)
+            messages.append({"role": "tool", "content": "Tool iteration limit reached."})
+            break
+
+        for tc in tool_calls_raw:
+            if isinstance(tc, dict):
+                fn_name = tc.get("function", {}).get("name", "")
+                fn_args = tc.get("function", {}).get("arguments", {})
+            else:
+                fn = getattr(tc, "function", None)
+                fn_name = getattr(fn, "name", "") if fn else ""
+                fn_args = getattr(fn, "arguments", {}) if fn else {}
+
+            if not fn_name:
+                continue
+
+            resolved = _resolve_tool_name(fn_name, tools_for_ollama)
+            if not resolved:
+                messages.append({"role": "tool", "content": f"Unknown tool: '{fn_name}'"})
+                continue
+            fn_name = resolved
+
+            fn_args = _strip_invalid_args(fn_name, fn_args or {}, tools_for_ollama)
+            yield {"type": "tool_call", "name": fn_name, "args": fn_args}
+
+            logger.info("Calling MCP tool '%s' with args: %s", fn_name, fn_args)
+            try:
+                tool_result = await _call_mcp_tool(fn_name, fn_args)
+            except Exception as exc:
+                tool_result = f"Tool '{fn_name}' error: {exc}"
+                logger.warning("MCP tool '%s' error: %s", fn_name, exc)
+
+            yield {"type": "tool_result", "name": fn_name, "content": tool_result}
+            messages.append({"role": "tool", "content": tool_result})
+
+    # Synthesis pass after hitting the iteration cap.
+    try:
+        final = await client.chat(model=model, messages=messages, tools=None, stream=False)
+    except Exception as exc:
+        yield {"type": "error", "content": str(exc)}
+        return
+
+    if isinstance(final, dict):
+        content = final.get("message", {}).get("content", "")
+    else:
+        msg = getattr(final, "message", None)
+        content = getattr(msg, "content", "") if msg else ""
+
+    final_content = str(content) if content else "Agent completed tool execution but produced no summary."
+    yield {"type": "done", "content": final_content}
 
 
 # Routes ---------------------------------------------------------------------
@@ -581,6 +760,43 @@ async def chat(request: ChatRequest) -> ChatResponse:
     await conv_client.append_message(session_id, "assistant", content)
 
     return ChatResponse(content=content, provider=PROVIDER_ID, session_id=session_id)
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest) -> StreamingResponse:
+    message = (request.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="A message is required.")
+
+    available_models = await _list_models()
+    model = (request.model or OLLAMA_MODEL).strip() or OLLAMA_MODEL
+    if available_models and model not in available_models:
+        logger.warning("Requested model '%s' not available; falling back to '%s'.", model, OLLAMA_MODEL)
+        model = OLLAMA_MODEL
+    if available_models and model not in available_models:
+        raise HTTPException(status_code=400, detail=f"Default model '{model}' not available. Available: {available_models}")
+
+    session_id = (request.session_id or f"default-{PROVIDER_ID}").strip() or f"default-{PROVIDER_ID}"
+    await conv_client.ensure(session_id, model=model)
+
+    final_content: Dict[str, str] = {"value": ""}
+
+    async def event_generator():
+        async for event in stream_ollama_chat(message, session_id, model):
+            if event.get("type") == "done":
+                final_content["value"] = event.get("content", "")
+            yield f"data: {json.dumps(event)}\n\n"
+        try:
+            await conv_client.append_message(session_id, "user", message)
+            await conv_client.append_message(session_id, "assistant", final_content["value"])
+        except Exception as exc:
+            logger.warning("Failed to save conversation after stream: %s", exc)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # Conversations --------------------------------------------------------------
