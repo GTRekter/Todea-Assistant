@@ -1,0 +1,18 @@
+{{- if .Values.trainingHub.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.trainingHub.trainingPvcName }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: training-hub
+spec:
+  accessModes:
+    {{- toYaml .Values.trainingHub.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.trainingHub.persistence.size }}
+  {{- if .Values.trainingHub.persistence.storageClass }}
+  storageClassName: {{ .Values.trainingHub.persistence.storageClass }}
+  {{- end }}
+{{- end }}

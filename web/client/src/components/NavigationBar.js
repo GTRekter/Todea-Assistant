@@ -5,6 +5,7 @@ import './navigationBar.css';
 const NAV_LINKS = [
     { label: 'Home', to: '/' },
     { label: 'Chat', to: '/gpt' },
+    { label: 'Training', to: '/training' },
     { label: 'Settings', to: '/settings' },
 ];
 
@@ -52,11 +53,6 @@ const NavigationBar = () => {
                     })}
                 </nav>
 
-                <div className="nav-cta d-none d-lg-flex">
-                    <Link to="/gpt" className="btn btn-primary btn-sm">
-                        Open Chat
-                    </Link>
-                </div>
             </div>
         </header>
     );

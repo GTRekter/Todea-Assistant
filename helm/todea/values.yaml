@@ -23,7 +23,9 @@ web:
             pathType: Prefix
     tls: []
   env:
-    REACT_APP_AGENT_HUB_URL: http://todea-agent-hub:3100/chat
+    REACT_APP_AGENT_HUB_URL: /chat
+    REACT_APP_TRAINING_HUB_URL: /training-hub
+    TRAINING_HUB_PROXY_TARGET: http://todea-training-hub:3500
 
 # MCP agent server -------------------------------------------------------------
 mcp:
@@ -103,6 +105,32 @@ helmAgent:
   allowOrigins: "*"
   env:
     LOG_LEVEL: DEBUG
+
+# Training Hub (manages scraping + fine-tuning Jobs) -------------------------
+trainingHub:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: todea-training-hub
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3500
+  allowOrigins: "*"
+  namespace: todea
+  githubSecretName: todea-github-token
+  trainingPvcName: todea-training-data
+  persistence:
+    size: 10Gi
+    storageClass: ""         # leave empty for default
+    accessModes:
+      - ReadWriteOnce
+  scraperImage: todea-scraper:local
+  trainerImage: todea-trainer:local
+  gpuNodeSelectorKey: agentpool
+  gpuNodeSelectorValue: gpupool
+  env: {}
 
 # In-cluster Ollama runtime (optional) ---------------------------------------
 ollamaRuntime:

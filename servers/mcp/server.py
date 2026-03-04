@@ -10,6 +10,7 @@ from linkerd_agent.agent import root_agent as linkerd_agent  # type: ignore
 from linkerd_agent import tools as linkerd_tools  # type: ignore
 from openssl_agent import tools as openssl_tools  # type: ignore
 from kubernetes_agent import tools as k8s_tools  # type: ignore
+from github_agent import tools as github_tools  # type: ignore
 from linkerd_agent.tools import BEL_HELM_REPO, BEL_HELM_REPO_URL, helm_configure_linkerd as _helm_configure_linkerd
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
@@ -511,6 +512,83 @@ def diagnose_pod_restarts(pod: str, namespace: str) -> str:
     namespace: namespace the pod is in.
     """
     return k8s_tools.diagnose_pod_restarts(pod=pod, namespace=namespace)
+
+
+# ---------------------------------------------------------------------------
+# GitHub tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool
+def github_get_file(repo: str, path: str, ref: str = "HEAD") -> str:
+    """
+    Fetch the raw text content of a file from a public GitHub repository.
+
+    Use this to read source code, configuration files, or any text file
+    directly from GitHub at query time — no training required.
+
+    repo: owner/repo (e.g. 'linkerd/linkerd2').
+    path: file path within the repo (e.g. 'pkg/identity/service.go').
+    ref: branch, tag, or commit SHA (default: HEAD).
+    """
+    return github_tools.github_get_file(repo=repo, path=path, ref=ref)
+
+
+@mcp.tool
+def github_list_directory(repo: str, path: str = "", ref: str = "HEAD") -> str:
+    """
+    List the contents of a directory in a public GitHub repository.
+
+    Use this to explore the repository structure before fetching specific files.
+    Returns a JSON list of entries with name, type (file/dir), path, and size.
+
+    repo: owner/repo (e.g. 'linkerd/linkerd2').
+    path: directory path within the repo. Empty string lists the repo root.
+    ref: branch, tag, or commit SHA (default: HEAD).
+    """
+    return github_tools.github_list_directory(repo=repo, path=path, ref=ref)
+
+
+@mcp.tool
+def github_search_code(repo: str, query: str) -> str:
+    """
+    Search for code within a public GitHub repository.
+
+    Returns the top 10 matching files with their paths and matching fragments.
+    Use this when you need to find where a function, type, or error string is
+    defined without knowing the exact file path.
+
+    repo: owner/repo (e.g. 'linkerd/linkerd2').
+    query: search terms (e.g. 'IdentityService', 'CrashLoopBackOff').
+    """
+    return github_tools.github_search_code(repo=repo, query=query)
+
+
+@mcp.tool
+def github_get_issue(repo: str, number: int) -> str:
+    """
+    Fetch a GitHub issue including its comments.
+
+    Returns JSON with title, state, labels, body, and all comments.
+    Useful for understanding the context and resolution of a reported bug.
+
+    repo: owner/repo (e.g. 'linkerd/linkerd2').
+    number: issue number.
+    """
+    return github_tools.github_get_issue(repo=repo, number=number)
+
+
+@mcp.tool
+def github_get_pr(repo: str, number: int) -> str:
+    """
+    Fetch a GitHub pull request including the list of changed files.
+
+    Returns JSON with title, state, body, and changed_files (filename, status,
+    additions, deletions). Use this to understand what a fix or feature touched.
+
+    repo: owner/repo (e.g. 'linkerd/linkerd2').
+    number: pull request number.
+    """
+    return github_tools.github_get_pr(repo=repo, number=number)
 
 
 if __name__ == "__main__":

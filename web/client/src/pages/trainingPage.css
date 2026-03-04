@@ -1,0 +1,156 @@
+/* ── Source checkboxes ─────────────────────────────────────────────────────── */
+
+.training-page .source-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+
+.training-page .source-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: #dfe4ff;
+    user-select: none;
+    padding: 0.35rem 0.6rem;
+    border-radius: 0.4rem;
+    border: 1px solid transparent;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.training-page .source-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* ── Custom repo add row ──────────────────────────────────────────────────── */
+
+.training-page .add-repo-row {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.training-page .add-repo-row .form-control {
+    flex: 1;
+    min-width: 0;
+}
+
+.training-page .custom-repo-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.training-page .custom-repo-remove {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.3);
+    cursor: pointer;
+    font-size: 0.7rem;
+    padding: 0 0.2rem;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.training-page .custom-repo-remove:hover {
+    color: rgba(255, 100, 100, 0.8);
+}
+
+/* ── Job table ────────────────────────────────────────────────────────────── */
+
+.training-page .job-table {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.training-page .job-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.65rem 0.85rem;
+    border-radius: 0.55rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    flex-wrap: wrap;
+}
+
+.training-page .job-row-left {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+.training-page .job-row-right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+.training-page .job-name {
+    font-size: 0.8rem;
+    color: rgba(255, 255, 255, 0.55);
+    font-family: monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 260px;
+}
+
+.training-page .job-type-badge {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    flex-shrink: 0;
+}
+
+.training-page .job-time {
+    white-space: nowrap;
+}
+
+/* ── Log viewer ───────────────────────────────────────────────────────────── */
+
+.training-page .log-viewer {
+    background: #0d0f14;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 0.6rem;
+    padding: 1rem 1.2rem;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.78rem;
+    line-height: 1.6;
+    color: #c9d1d9;
+    max-height: 380px;
+    overflow-y: auto;
+}
+
+.training-page .log-line {
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.training-page .log-line:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.training-page .log-waiting {
+    color: rgba(255, 255, 255, 0.3);
+    font-style: italic;
+}
+
+.training-page .log-job-name {
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #9db8ff;
+}

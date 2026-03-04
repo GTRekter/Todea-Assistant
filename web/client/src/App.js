@@ -4,6 +4,7 @@ import { Layout } from './components/Layout';
 import HomePage from './pages/HomePage';
 import ChatPage from './pages/ChatPage';
 import SettingsPage from './pages/SettingsPage';
+import TrainingPage from './pages/TrainingPage';
 
 export default class App extends Component {
     render () {
@@ -12,6 +13,7 @@ export default class App extends Component {
                 <Route exact path='/' component={HomePage} />
                 <Route exact path='/gpt' component={ChatPage} />
                 <Route exact path='/settings' component={SettingsPage} />
+                <Route exact path='/training' component={TrainingPage} />
             </Layout>
         );
     }

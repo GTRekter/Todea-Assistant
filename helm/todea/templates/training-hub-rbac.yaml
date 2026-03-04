@@ -1,0 +1,46 @@
+{{- if .Values.trainingHub.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "todea.trainingHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: training-hub
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "todea.trainingHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: training-hub
+rules:
+  # Create and manage training Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # Watch pod status and stream logs
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # Manage GitHub token secret
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "todea.trainingHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: training-hub
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "todea.trainingHub.name" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "todea.trainingHub.name" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

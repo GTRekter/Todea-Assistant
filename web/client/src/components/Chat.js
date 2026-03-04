@@ -433,12 +433,13 @@ export default function Chat() {
                         </div>
                         <button
                             type="button"
-                            className="btn btn-primary btn-sm d-inline-flex align-items-center gap-2"
+                            className="btn btn-primary rounded-circle d-flex align-items-center justify-content-center chat-btn"
                             onClick={handleNewConversationClick}
                             disabled={isSending || isSidebarLoading}
+                            aria-label="Start new conversation"
+                            title="Start new conversation"
                         >
                             <FontAwesomeIcon icon={faPlus} />
-                            New
                         </button>
                     </div>
                     <div className="conversation-list">
@@ -528,7 +529,7 @@ export default function Chat() {
                         <div className="d-flex flex-wrap justify-content-end align-items-center gap-2">
                             <button
                                 type="submit"
-                                className="btn btn-light rounded-circle d-flex align-items-center justify-content-center chat-btn"
+                                className="btn btn-primary rounded-circle d-flex align-items-center justify-content-center chat-btn"
                                 disabled={!isReady || isSending || !inputValue.trim()}
                                 aria-label="Send message"
                             >

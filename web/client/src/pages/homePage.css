@@ -62,7 +62,9 @@
         align-items: flex-start;
     }
 
-    .steps .card li .index {
+    .steps .card li .index,
+    .setup .card li .index {
+        flex-shrink: 0;
         width: 36px;
         height: 36px;
         border-radius: 50%;
@@ -95,29 +97,9 @@
         align-items: flex-start;
     }
 
-    .setup .card li .index {
-        flex-shrink: 0;
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        border: 1px solid rgba(255, 255, 255, 0.4);
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-weight: 600;
-    }
-
     .setup .card li p {
         margin: 0;
         line-height: 1.6;
-    }
-
-    .setup .card code {
-        font-size: 0.82rem;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 0.25rem;
-        padding: 0.1em 0.35em;
-        color: rgba(255, 255, 255, 0.9);
     }
 
     .setup .card a {

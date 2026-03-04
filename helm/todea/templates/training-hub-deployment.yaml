@@ -1,0 +1,67 @@
+{{- if .Values.trainingHub.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "todea.trainingHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: training-hub
+spec:
+  replicas: {{ .Values.trainingHub.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "todea.trainingHub.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "todea.trainingHub.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "todea.trainingHub.name" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: training-hub
+          image: "{{ .Values.trainingHub.image.repository }}:{{ .Values.trainingHub.image.tag }}"
+          imagePullPolicy: {{ .Values.trainingHub.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.trainingHub.service.port }}
+              protocol: TCP
+          env:
+            - name: ALLOW_ORIGINS
+              value: {{ .Values.trainingHub.allowOrigins | quote }}
+            - name: PORT
+              value: {{ .Values.trainingHub.service.port | quote }}
+            - name: NAMESPACE
+              value: {{ .Values.trainingHub.namespace | default .Release.Namespace | quote }}
+            - name: GITHUB_SECRET_NAME
+              value: {{ .Values.trainingHub.githubSecretName | quote }}
+            - name: TRAINING_PVC_NAME
+              value: {{ .Values.trainingHub.trainingPvcName | quote }}
+            - name: SCRAPER_IMAGE
+              value: {{ .Values.trainingHub.scraperImage | quote }}
+            - name: TRAINER_IMAGE
+              value: {{ .Values.trainingHub.trainerImage | quote }}
+            - name: GPU_NODE_SELECTOR_KEY
+              value: {{ .Values.trainingHub.gpuNodeSelectorKey | quote }}
+            - name: GPU_NODE_SELECTOR_VALUE
+              value: {{ .Values.trainingHub.gpuNodeSelectorValue | quote }}
+            {{- range $key, $value := .Values.trainingHub.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+{{- end }}

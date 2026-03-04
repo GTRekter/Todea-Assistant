@@ -112,6 +112,15 @@ app.kubernetes.io/component: conversation-hub
 app.kubernetes.io/component: helm-agent
 {{- end -}}
 
+{{- define "todea.trainingHub.name" -}}
+{{- include "todea.componentName" (dict "root" . "component" "training-hub") -}}
+{{- end -}}
+
+{{- define "todea.trainingHub.selectorLabels" -}}
+{{ include "todea.selectorLabels" . }}
+app.kubernetes.io/component: training-hub
+{{- end -}}
+
 {{- define "todea.mcp.secretName" -}}
 {{- printf "%s-secret" (include "todea.mcp.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
