@@ -23,9 +23,9 @@ web:
             pathType: Prefix
     tls: []
   env:
-    REACT_APP_AGENT_HUB_URL: /chat
     REACT_APP_TRAINING_HUB_URL: /training-hub
     TRAINING_HUB_PROXY_TARGET: http://todea-training-hub:3500
+    HUB_PROXY_TARGET: http://todea-agent-hub:3100
 
 # MCP agent server -------------------------------------------------------------
 mcp:
@@ -44,7 +44,8 @@ mcp:
   env: {}
   googleApiKey: ""
 
-# Agent Hub server ----------------------------------------------------------
+# Unified Hub (Google + Ollama + Azure in one service) ----------------------
+# Provider credentials are set via the settings page (stored in apiKeysSecretName).
 agentHub:
   enabled: true
   replicaCount: 1
@@ -56,26 +57,10 @@ agentHub:
     type: ClusterIP
     port: 3100
   allowOrigins: "*"
-  agentModel: gemini-2.5-flash
-  googleApiKey: ""
+  # Name of the Kubernetes secret that stores provider API keys / config.
+  # Managed by the settings page — do not set credentials here.
+  apiKeysSecretName: todea-api-keys
   env: {}
-
-# Ollama Hub server ----------------------------------------------------------
-ollamaHub:
-  enabled: false
-  replicaCount: 1
-  image:
-    repository: todea-ollama-hub
-    tag: local
-    pullPolicy: IfNotPresent
-  service:
-    type: ClusterIP
-    port: 3200
-  allowOrigins: "*"
-  agentModel: llama3.1:8b
-  ollamaHost: http://todea-ollama:11434
-  env:
-    MCP_SERVER_URL: "http://todea-mcp:3002/mcp"
 
 # Conversation Hub server (shared conversation storage) ----------------------
 conversationHub:

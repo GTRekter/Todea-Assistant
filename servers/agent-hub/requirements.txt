@@ -1,5 +1,12 @@
 fastapi
 uvicorn
-google-adk
 python-dotenv
 httpx
+# Google
+google-adk
+# Ollama
+ollama==0.6.1
+# Azure
+openai>=1.0.0
+# MCP (Ollama + Azure tool calling)
+fastmcp

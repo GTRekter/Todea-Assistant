@@ -1,30 +1,30 @@
+"""Shared configuration — loaded from environment variables."""
+from __future__ import annotations
+
+import logging
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# ---------------------------------------------------------------------------
+# Shared / infrastructure
+# ---------------------------------------------------------------------------
+
 ALLOW_ORIGINS = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",") if o.strip()]
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:3002/mcp")
 CONVERSATION_HUB_URL = os.getenv("CONVERSATION_HUB_URL", "http://localhost:3300")
+MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "10"))
+TOOL_REFRESH_SECONDS = int(os.getenv("TOOL_REFRESH_SECONDS", "300"))
+PORT = int(os.getenv("PORT", "3100"))
 KUBE_NAMESPACE = os.getenv("KUBE_NAMESPACE", "todea")
 KUBE_SECRET_NAME = os.getenv("KUBE_SECRET_NAME", "todea-api-keys")
-PORT = int(os.environ.get("PORT", "3100"))
-GOOGLE_MODEL = os.getenv("AGENT_MODEL_GOOGLE", "gemini-2.5-flash")
-GOOGLE_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-pro",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-]
-PROVIDER_ID = "google"
-APP_NAME = "todea-google"
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY")
-GOOGLE_VERTEX_PROJECT = os.getenv("GOOGLE_VERTEX_PROJECT") or os.getenv("VERTEX_PROJECT")
-GOOGLE_VERTEX_LOCATION = os.getenv("GOOGLE_VERTEX_LOCATION") or os.getenv("VERTEX_LOCATION")
+_kube_server: str = os.getenv("KUBE_SERVER", "")
+
 DEFAULT_INSTRUCTION = os.getenv(
     "DEFAULT_INSTRUCTION",
     (
@@ -43,6 +43,7 @@ DEFAULT_INSTRUCTION = os.getenv(
         "- Upgrade Linkerd: call helm_repo_add (no args), then helm_upgrade_linkerd.\n"
         "- Uninstall: call helm_status first to discover release names, then helm_uninstall_linkerd.\n\n"
         "NEVER call helm_*, linkerd_*, install_*, or generate_* tools in a different order than shown above.\n"
+        "NEVER use the 'chat' tool.\n"
         "When calling any tool with no required arguments, pass an empty argument list."
     ),
 )

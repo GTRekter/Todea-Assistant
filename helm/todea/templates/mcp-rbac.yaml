@@ -23,7 +23,9 @@ rules:
       - pods/log
       - events
       - services
+      - serviceaccounts
       - configmaps
+      - secrets
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources:

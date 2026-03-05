@@ -12,6 +12,7 @@ import './chat.css';
 import {
     streamChatRequest,
     getModels,
+    getSettingsStatus,
     listConversations,
     createConversation,
     fetchConversation,
@@ -64,10 +65,10 @@ const initialMessages = [
     },
 ];
 
-const PROVIDER_ID = 'google';
-
 export default function Chat() {
+    // models is now [{id, provider}]
     const [models, setModels] = useState([]);
+    // selectedModel is {id, provider} or null
     const [selectedModel, setSelectedModel] = useState(null);
     const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
     const [inputValue, setInputValue] = useState('');
@@ -80,8 +81,6 @@ export default function Chat() {
 
     const scrollAnchorRef = useRef(null);
     const modelDropdownRef = useRef(null);
-
-    const selectedProvider = PROVIDER_ID;
 
     const activeConversation = useMemo(
         () => conversations.find((c) => c.id === activeConversationId) || null,
@@ -111,9 +110,6 @@ export default function Chat() {
                 const others = prev.filter((c) => c.id !== conversationId);
                 return [detail, ...others];
             });
-            if (detail.model) {
-                setSelectedModel(detail.model);
-            }
         } catch (err) {
             console.error('Failed to hydrate conversation', err);
         }
@@ -122,20 +118,52 @@ export default function Chat() {
     const loadInitialData = useCallback(async () => {
         setIsSidebarLoading(true);
         try {
-            const [modelData, conversationData] = await Promise.all([
+            const [modelData, conversationData, settingsStatus] = await Promise.all([
                 getModels(),
                 listConversations(),
+                getSettingsStatus().catch(() => null),
             ]);
 
-            const nextModel = modelData?.default || modelData?.models?.[0] || null;
-            setModels(modelData?.models || []);
-            setSelectedModel(nextModel);
+            const providerFlags = settingsStatus?.providers || null;
+            const allowedProviders = providerFlags
+                ? Object.entries(providerFlags)
+                    .filter(([, enabled]) => enabled)
+                    .map(([name]) => name)
+                : null;
+
+            const modelList = modelData?.models || [];
+            const filteredModels = allowedProviders
+                ? modelList.filter((m) => allowedProviders.includes(m.provider))
+                : modelList;
+            setModels(filteredModels);
+
+            // Default model: prefer the server's suggestion, otherwise first in filtered list
+            const defaultId = modelData?.default;
+            const defaultProvider = modelData?.default_provider;
+            const defaultModel = (() => {
+                if (!filteredModels.length) return null;
+                if (defaultId) {
+                    return filteredModels.find((m) => m.id === defaultId && m.provider === defaultProvider)
+                        || filteredModels.find((m) => m.id === defaultId)
+                        || filteredModels[0];
+                }
+                return filteredModels[0];
+            })();
+            setSelectedModel(defaultModel || null);
+
+            const modelIdForConversation = defaultModel?.id || null;
 
             if (!conversationData.length) {
-                const created = await createConversation({ model: nextModel });
-                setConversations([created]);
-                setActiveConversationId(created.id);
-                setMessagesByConversation({ [created.id]: [] });
+                if (!modelIdForConversation) {
+                    setConversations([]);
+                    setActiveConversationId(null);
+                    setMessagesByConversation({});
+                } else {
+                    const created = await createConversation({ model: modelIdForConversation });
+                    setConversations([created]);
+                    setActiveConversationId(created.id);
+                    setMessagesByConversation({ [created.id]: [] });
+                }
             } else {
                 setConversations(conversationData);
                 const firstId = conversationData[0]?.id;
@@ -177,7 +205,7 @@ export default function Chat() {
     // ---------------------------------------------------------------------
 
     const createAndActivateConversation = useCallback(async () => {
-        const conversation = await createConversation({ model: selectedModel });
+        const conversation = await createConversation({ model: selectedModel?.id });
         setConversations((prev) => [conversation, ...prev]);
         setMessagesByConversation((prev) => ({
             ...prev,
@@ -247,6 +275,7 @@ export default function Chat() {
         async (userContent, conversationId) => {
             const ts = Date.now();
             const placeholderId = `assistant-${ts}`;
+            const modelLabel = selectedModel?.id || '…';
             const userMessage = {
                 id: `user-${ts}`,
                 role: 'user',
@@ -256,7 +285,7 @@ export default function Chat() {
             const placeholder = {
                 id: placeholderId,
                 role: 'assistant',
-                content: `Thinking with ${selectedModel}…`,
+                content: `Thinking with ${modelLabel}…`,
                 placeholder: true,
                 timestamp: ts,
             };
@@ -273,9 +302,9 @@ export default function Chat() {
                 const steps = [];
                 await streamChatRequest({
                     message: userContent,
-                    provider: selectedProvider,
+                    provider: selectedModel?.provider,
                     sessionId: conversationId,
-                    model: selectedModel,
+                    model: selectedModel?.id,
                     onEvent: (event) => {
                         if (event.type === 'done') {
                             setMessagesByConversation((prev) => {
@@ -327,7 +356,7 @@ export default function Chat() {
                         : {
                               id: conversationId,
                               title: 'Conversation',
-                              model: selectedModel,
+                              model: selectedModel?.id,
                               created_at: now,
                               updated_at: now,
                               message_count: 2,
@@ -337,7 +366,7 @@ export default function Chat() {
                 });
             }
         },
-        [selectedModel, selectedProvider],
+        [selectedModel],
     );
 
     const handleSubmit = async (event) => {
@@ -374,7 +403,7 @@ export default function Chat() {
     const handleSelectModel = (model) => {
         setSelectedModel(model);
         setConversations((prev) =>
-            prev.map((c) => (c.id === activeConversationId ? { ...c, model } : c))
+            prev.map((c) => (c.id === activeConversationId ? { ...c, model: model.id } : c))
         );
         setIsModelMenuOpen(false);
     };
@@ -435,7 +464,7 @@ export default function Chat() {
                             type="button"
                             className="btn btn-primary rounded-circle d-flex align-items-center justify-content-center chat-btn"
                             onClick={handleNewConversationClick}
-                            disabled={isSending || isSidebarLoading}
+                            disabled={isSending || isSidebarLoading || !selectedModel}
                             aria-label="Start new conversation"
                             title="Start new conversation"
                         >
@@ -460,7 +489,10 @@ export default function Chat() {
                         <div>
                             <p className="eyebrow text-uppercase mb-1">Active chat</p>
                             <h5 className="mb-0">{activeConversation?.title || 'New conversation'}</h5>
-                            <small className="text-muted">Model: {selectedModel || '—'}</small>
+                            <small className="text-muted">
+                                Model: {selectedModel?.id || '—'}
+                                {selectedModel?.provider && <span className="ms-1">{selectedModel.provider}</span>}
+                            </small>
                         </div>
                         <div
                             ref={modelDropdownRef}
@@ -480,12 +512,12 @@ export default function Chat() {
                             <div className={`dropdown-menu dropdown-menu-end dropdown-menu-dark ${isModelMenuOpen ? 'show' : ''}`}>
                                 {(models ?? []).map((model) => (
                                     <button
-                                        key={model}
+                                        key={`${model.provider}:${model.id}`}
                                         type="button"
-                                        className={`dropdown-item${selectedModel === model ? ' active' : ''}`}
+                                        className={`dropdown-item d-flex align-items-center justify-content-between${selectedModel?.id === model.id && selectedModel?.provider === model.provider ? ' active' : ''}`}
                                         onClick={() => handleSelectModel(model)}
                                     >
-                                        {model}
+                                        <span>{model.id}</span>
                                     </button>
                                 ))}
                             </div>
@@ -503,7 +535,7 @@ export default function Chat() {
                                         <ThinkingBlock steps={message.steps} />
                                     )}
                                     {message.placeholder && !message.steps?.length && (
-                                        <span className="text-secondary fst-italic small">Thinking with {selectedModel}…</span>
+                                        <span className="text-secondary fst-italic small">Thinking with {selectedModel?.id || '…'}…</span>
                                     )}
                                     {message.content && (
                                         <div>{message.content}</div>

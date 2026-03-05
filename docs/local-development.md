@@ -9,17 +9,19 @@ Instructions for running each service locally without k3d.
 ```bash
 cd web/client
 yarn install
-yarn start        # http://localhost:3000
+REACT_APP_HUB_URL=http://localhost:3100 yarn start   # http://localhost:3000
 ```
+
+`REACT_APP_HUB_URL` must be set when running the React dev server directly (bypassing the Express proxy). When the app is served through the Express server (`web/server/index.js`) — either locally or in-cluster — leave it unset so requests use relative paths and the Express proxy forwards them to the agent-hub.
 
 ---
 
-## Helm Agent (`servers/mcp/helm-agent`)
+## Helm Agent (`servers/mcp/helm_agent`)
 
 Requires `helm` and `kubectl` installed and configured to reach a cluster.
 
 ```bash
-cd servers/mcp/helm-agent
+cd servers/mcp/helm_agent
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python3 app.py
@@ -47,9 +49,64 @@ Key endpoints:
 
 ---
 
+## OpenSSL Agent (`servers/mcp/openssl_agent`)
+
+No external binaries required — uses the Python `cryptography` library.
+
+```bash
+cd servers/mcp/openssl_agent
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python3 app.py
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3500` | Port to listen on |
+| `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
+
+Key endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `POST /certificates/generate` | Generate a trust anchor + issuer cert pair |
+| `POST /certificates/inspect` | Parse and display a PEM certificate |
+| `POST /certificates/verify` | Verify an issuer cert was signed by a given CA |
+| `GET  /healthz` | Health check |
+
+---
+
+## GitHub Agent (`servers/mcp/github_agent`)
+
+```bash
+cd servers/mcp/github_agent
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+GITHUB_TOKEN=<your-token> python3 app.py
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3600` | Port to listen on |
+| `GITHUB_TOKEN` | _(optional)_ | Personal access token — raises rate limit from 60 to 5 000 req/h |
+| `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
+
+Key endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `GET /github/file?repo=&path=&ref=` | Fetch raw file content |
+| `GET /github/directory?repo=&path=&ref=` | List directory contents |
+| `GET /github/search?repo=&query=` | Search code within a repository |
+| `GET /github/issue?repo=&number=` | Fetch an issue with its comments |
+| `GET /github/pr?repo=&number=` | Fetch a pull request with changed files |
+| `GET /healthz` | Health check |
+
+---
+
 ## MCP agent server (`servers/mcp`)
 
-Requires the Helm Agent running (see above) and `kubectl` on `$PATH` configured to reach a cluster (for the `kubernetes_agent` diagnostic tools). The `linkerd` CLI is optional — `linkerd_check` falls back to `kubectl get pods` when it is absent. No other external binaries are required: certificate generation uses the Python `cryptography` library.
+Start the **Helm Agent** first (see above). `kubectl` must be on `$PATH` and configured to reach a cluster for the `kubernetes_agent` diagnostic tools. The `linkerd` CLI is optional — `linkerd_check` falls back to `kubectl get pods` when absent. Certificate generation uses the Python `cryptography` library — no external binary required.
 
 ```bash
 cd servers/mcp
@@ -78,7 +135,7 @@ Try: "Install Linkerd 2.19", "What version of Linkerd is running?", "Why are the
 
 ## Conversation Hub (`servers/conversation-hub`)
 
-Start this before running Agent Hub or Ollama Hub locally.
+Start this before running the Hub locally.
 
 ```bash
 cd servers/conversation-hub
@@ -96,21 +153,59 @@ uvicorn app:app --port 3300
 
 ## Agent Hub (`servers/agent-hub`)
 
+Unified LLM gateway — routes requests to Google (Gemini/ADK), Azure OpenAI, or Ollama based on the `provider` field sent by the UI. Only the providers whose credentials are set will be available in the model dropdown.
+
 ```bash
 cd servers/agent-hub
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in GOOGLE_API_KEY
 uvicorn app:app --port 3100
+```
+
+Set credentials for the providers you want to use:
+
+```bash
+# Google
+export GOOGLE_API_KEY=AIza...
+
+# Azure OpenAI
+export AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+export AZURE_OPENAI_API_KEY=...
+export AZURE_OPENAI_DEPLOYMENT=gpt-4o
+export AZURE_OPENAI_API_VERSION=2024-12-01-preview
+
+# Ollama (defaults to localhost:11434 if not set)
+export OLLAMA_HOST=http://localhost:11434
 ```
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOOGLE_API_KEY` | _(required)_ | Google GenAI API key |
 | `MCP_SERVER_URL` | `http://localhost:3002/mcp` | MCP server endpoint |
 | `CONVERSATION_HUB_URL` | `http://localhost:3300` | Conversation Hub endpoint |
-| `AGENT_MODEL_GOOGLE` | `gemini-2.0-flash` | Gemini model to use |
+| `GOOGLE_API_KEY` | _(optional)_ | Google GenAI API key — enables Google provider |
+| `AGENT_MODEL_GOOGLE` | `gemini-2.5-flash` | Default Gemini model |
+| `AZURE_OPENAI_ENDPOINT` | _(optional)_ | Azure OpenAI resource URL — enables Azure provider |
+| `AZURE_OPENAI_API_KEY` | _(optional)_ | Azure OpenAI API key |
+| `AZURE_OPENAI_DEPLOYMENT` | `gpt-4o` | Deployment name as shown in Azure AI Foundry |
+| `AZURE_OPENAI_API_VERSION` | `2024-12-01-preview` | Azure OpenAI API version |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server base URL — enables Ollama provider |
+| `AGENT_MODEL_OLLAMA` | `llama3.1:8b` | Default Ollama model |
+| `MAX_TOOL_ITERATIONS` | `10` | Max tool-calling rounds before synthesis |
+| `TOOL_REFRESH_SECONDS` | `300` | How often the MCP tool list is re-fetched |
+| `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
 | `PORT` | `3100` | Port to listen on |
+
+Key endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `GET  /models` | Returns `{models: [{id, provider}], default, default_provider}` |
+| `POST /chat/stream` | SSE — streams `thinking`, `tool_call`, `tool_result`, `done` events; dispatches by `provider` field |
+| `POST /settings` | Writes/patches provider credentials into the `todea-api-keys` K8s secret |
+| `GET  /settings/status` | Returns `{exists, providers: {google, azure, ollama}}` |
+| `GET  /settings/cluster` | Returns the active cluster API server URL |
+| `POST /settings/cluster` | Sets the cluster API server URL |
+| `GET  /healthz` | Health check |
 
 ---
 
@@ -157,41 +252,3 @@ Key endpoints:
 
 ---
 
-## Ollama Hub (`servers/ollama-hub`)
-
-Requires an Ollama server with at least one model pulled.
-
-```bash
-# Start ollama locally
-ollama serve &
-ollama pull llama3.1:8b
-
-cd servers/ollama-hub
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # adjust OLLAMA_HOST if needed
-uvicorn app:app --port 3200
-```
-
-Point the React UI at it: `REACT_APP_AGENT_HUB_URL=http://localhost:3200/chat yarn start`
-
-Key endpoints:
-
-| Endpoint | Description |
-|---|---|
-| `POST /chat` | Blocking — returns full JSON response when complete |
-| `POST /chat/stream` | SSE — streams `thinking`, `tool_call`, `tool_result`, `done` events |
-| `GET  /models` | List available Ollama models |
-| `GET/POST /conversations` | Conversation management |
-
-| Variable | Default | Description |
-|---|---|---|
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server base URL |
-| `MCP_SERVER_URL` | `http://localhost:3002/mcp` | MCP server endpoint |
-| `CONVERSATION_HUB_URL` | `http://localhost:3300` | Conversation Hub endpoint |
-| `AGENT_MODEL_OLLAMA` | `llama3.1:8b` | Default model |
-| `MAX_TOOL_ITERATIONS` | `10` | Max tool-calling rounds before synthesis |
-| `TOOL_REFRESH_SECONDS` | `300` | How often the MCP tool list is re-fetched |
-| `DEFAULT_INSTRUCTION` | _(see app.py)_ | System prompt injected into every conversation |
-| `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
-| `PORT` | `3200` | Port to listen on |

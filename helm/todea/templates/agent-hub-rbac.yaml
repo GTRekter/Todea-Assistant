@@ -1,0 +1,41 @@
+{{- if .Values.agentHub.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "todea.agentHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-hub
+---
+# ClusterRole: read/create namespaces + read/write the api-keys secret cluster-wide
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "todea.agentHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-hub
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "patch", "apply"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "todea.agentHub.name" . }}
+  labels:
+    {{- include "todea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-hub
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "todea.agentHub.name" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "todea.agentHub.name" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

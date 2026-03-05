@@ -1,61 +1,59 @@
-from typing import Dict
+"""Conversation CRUD routes (proxy to conversation-hub)."""
+from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from config import GOOGLE_MODEL, GOOGLE_MODELS
-from conversation_hub import conv_client
-from models import (
+import providers.google as google_provider
+from conv_client import conv_client
+from schemas import (
     Conversation,
     ConversationCreateRequest,
     ConversationListResponse,
     ConversationUpdateRequest,
 )
 
-router = APIRouter()
+router = APIRouter(prefix="/conversations")
 
 
-def _conversation_not_found(conversation_id: str) -> HTTPException:
+def _not_found(conversation_id: str) -> HTTPException:
     return HTTPException(status_code=404, detail=f"Conversation '{conversation_id}' not found.")
 
 
-@router.get("/conversations", response_model=ConversationListResponse)
+@router.get("", response_model=ConversationListResponse)
 async def list_conversations() -> ConversationListResponse:
     data = await conv_client.list()
     return ConversationListResponse(**data)
 
 
-@router.post("/conversations", response_model=Conversation)
+@router.post("", response_model=Conversation)
 async def create_conversation(request: ConversationCreateRequest) -> Conversation:
-    model = (request.model or GOOGLE_MODEL).strip() or GOOGLE_MODEL
-    if model not in GOOGLE_MODELS:
-        raise HTTPException(status_code=400, detail=f"Unknown model '{model}'. Available: {GOOGLE_MODELS}")
-
+    model = (request.model or google_provider.GOOGLE_MODEL).strip() or google_provider.GOOGLE_MODEL
     data = await conv_client.create(request.title, model=model)
     return Conversation(**data)
 
 
-@router.get("/conversations/{conversation_id}", response_model=Conversation)
+@router.get("/{conversation_id}", response_model=Conversation)
 async def get_conversation(conversation_id: str) -> Conversation:
     try:
         data = await conv_client.get(conversation_id)
     except KeyError:
-        raise _conversation_not_found(conversation_id) from None
+        raise _not_found(conversation_id) from None
     return Conversation(**data)
 
 
-@router.patch("/conversations/{conversation_id}", response_model=Conversation)
+@router.patch("/{conversation_id}", response_model=Conversation)
 async def update_conversation(conversation_id: str, request: ConversationUpdateRequest) -> Conversation:
     try:
         data = await conv_client.update_title(conversation_id, request.title)
     except KeyError:
-        raise _conversation_not_found(conversation_id) from None
+        raise _not_found(conversation_id) from None
     return Conversation(**data)
 
 
-@router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str) -> Dict[str, str]:
+@router.delete("/{conversation_id}")
+async def delete_conversation(conversation_id: str) -> dict:
     try:
         await conv_client.delete(conversation_id)
     except KeyError:
-        raise _conversation_not_found(conversation_id) from None
+        raise _not_found(conversation_id) from None
     return {"status": "deleted", "id": conversation_id}

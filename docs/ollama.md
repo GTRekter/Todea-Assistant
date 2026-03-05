@@ -71,11 +71,13 @@ Once running, verify in the logs:
 - `Listening on [::]:11434` — bound to all interfaces (reachable from k3d)
 - `inference compute ... library=Metal` — Metal GPU acceleration active
 
-Then deploy without the in-cluster runtime, pointing the hub at your host via the k3d magic hostname `host.k3d.internal`:
+Then deploy without the in-cluster runtime, pointing the hub at your host:
 
 ```bash
---set ollamaRuntime.enabled=false \
---set ollamaHub.ollamaHost=http://host.k3d.internal:11434
+MAC_IP=$(ipconfig getifaddr en0 || ipconfig getifaddr en1)
+helm upgrade todea ./helm/todea -n todea --reuse-values \
+  --set ollamaRuntime.enabled=false \
+  --set ollamaHub.ollamaHost=http://$MAC_IP:11434
 ```
 
 ---

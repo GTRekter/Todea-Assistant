@@ -45,6 +45,11 @@ def _parse_lifetime(lifetime: str) -> datetime.timedelta:
     )
 
 
+def _normalize_pem(pem: str) -> bytes:
+    """Normalize a PEM string to bytes, handling literal \\n escape sequences."""
+    return pem.strip().replace("\\n", "\n").encode()
+
+
 def _key_usage_ca() -> x509.KeyUsage:
     return x509.KeyUsage(
         digital_signature=False,
@@ -148,7 +153,7 @@ def inspect_certificate(pem_content: str) -> str:
     pem_content: the PEM string of the certificate to inspect.
     """
     try:
-        cert = x509.load_pem_x509_certificate(pem_content.strip().encode())
+        cert = x509.load_pem_x509_certificate(_normalize_pem(pem_content))
     except Exception as exc:
         return json.dumps({"error": f"Failed to parse certificate: {exc}"}, indent=4)
 
@@ -208,12 +213,12 @@ def verify_certificate_chain(ca_cert_pem: str, cert_pem: str) -> str:
     cert_pem: PEM string of the certificate to verify (e.g. issuer cert).
     """
     try:
-        ca = x509.load_pem_x509_certificate(ca_cert_pem.strip().encode())
+        ca = x509.load_pem_x509_certificate(_normalize_pem(ca_cert_pem))
     except Exception as exc:
         return json.dumps({"error": f"Failed to parse CA certificate: {exc}"}, indent=4)
 
     try:
-        cert = x509.load_pem_x509_certificate(cert_pem.strip().encode())
+        cert = x509.load_pem_x509_certificate(_normalize_pem(cert_pem))
     except Exception as exc:
         return json.dumps({"error": f"Failed to parse certificate: {exc}"}, indent=4)
 

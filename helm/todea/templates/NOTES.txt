@@ -18,10 +18,8 @@ Core services:
   - MCP agent: http://{{ include "todea.mcp.name" . }}:{{ .Values.mcp.service.port }}{{ .Values.mcp.apiPath }} (ClusterIP)
 {{- end }}
 {{- if .Values.agentHub.enabled }}
-  - Agent Hub: http://{{ include "todea.agentHub.name" . }}:{{ .Values.agentHub.service.port }}/chat (ClusterIP)
-{{- end }}
-{{- if .Values.ollamaHub.enabled }}
-  - Ollama Hub: http://{{ include "todea.ollamaHub.name" . }}:{{ .Values.ollamaHub.service.port }}/chat (ClusterIP)
+  - Agent Hub: http://{{ include "todea.agentHub.name" . }}:{{ .Values.agentHub.service.port }}/chat (ClusterIP, Google · Azure · Ollama)
+    Configure provider credentials via the Settings page in the UI.
 {{- end }}
 {{- if .Values.ollamaRuntime.enabled }}
   - Ollama Runtime: http://{{ include "todea.ollamaRuntime.name" . }}:{{ .Values.ollamaRuntime.service.port }} (ClusterIP)

@@ -4,6 +4,7 @@ import re
 import subprocess
 
 import httpx
+from openssl_agent import tools as openssl_tools  # type: ignore
 
 CLI_TIMEOUT = 120  # seconds — for step/linkerd CLIs only
 
@@ -176,6 +177,57 @@ def install_gateway_api_crds(version: str) -> str:
     url = _gateway_api_manifest_url(version)
     result = _helm_post("/kubectl/apply", {"url": url})
     return f"Gateway API CRDs ({url}):\n{result}"
+
+
+def install_linkerd_control_plane(
+    version: str,
+    license_key: str,
+    namespace: str = "linkerd",
+) -> str:
+    """
+    Generate certificates and install the Linkerd Enterprise control plane in one step.
+
+    This composite tool runs generate_certificates followed by
+    helm_install_linkerd_control_plane internally so the model never has to
+    copy large PEM strings between tool calls.
+
+    Call this INSTEAD of calling generate_certificates and
+    helm_install_linkerd_control_plane separately.
+
+    version: the BEL Helm chart version (e.g. '2.19.4').
+    license_key: the Buoyant Enterprise Linkerd license key (BUOYANT_LICENSE).
+    namespace: target namespace (default: linkerd).
+    """
+    certs_raw = openssl_tools.generate_certificates()
+    try:
+        certs = json.loads(certs_raw)
+    except Exception as exc:
+        return json.dumps({"error": f"Certificate generation failed: {exc}"}, indent=4)
+    if "error" in certs:
+        return certs_raw
+
+    install_result = helm_install_linkerd_control_plane(
+        version=version,
+        license_key=license_key,
+        ca_cert_pem=certs["ca_cert_pem"],
+        issuer_cert_pem=certs["issuer_cert_pem"],
+        issuer_key_pem=certs["issuer_key_pem"],
+        namespace=namespace,
+    )
+
+    try:
+        install_data = json.loads(install_result)
+    except Exception:
+        install_data = install_result
+
+    return json.dumps({
+        "certificates": {
+            "ca_cert_pem": certs["ca_cert_pem"],
+            "issuer_cert_pem": certs["issuer_cert_pem"],
+            "issuer_key_pem": certs["issuer_key_pem"],
+        },
+        "install": install_data,
+    }, indent=4)
 
 
 def generate_certificates(
@@ -392,27 +444,16 @@ def helm_status(
     return _helm_get("/helm/status", {"release": release, "namespace": namespace})
 
 
-def linkerd_check(proxy: bool = False, namespace: str = "linkerd") -> str:
+
+def linkerd_check(proxy: bool = False, namespace: str = "linkerd", timeout: str = "30s") -> str:
     """
     Run 'linkerd check' to verify the BEL installation health.
-    Falls back to kubectl get pods (via helm agent) when the linkerd CLI is not installed.
 
     proxy: if True, also validate data-plane proxy health (linkerd check --proxy).
-    namespace: namespace to inspect when falling back to kubectl (default: linkerd).
+    namespace: namespace to inspect (default: linkerd).
+    timeout: how long to wait for each check before failing (default: 30s).
     """
-    args = ["linkerd", "check"]
+    args = ["linkerd", "check", "--wait", timeout, "--verbose"]
     if proxy:
         args.append("--proxy")
-    result = _run(*args)
-    try:
-        parsed = json.loads(result)
-        if "error" in parsed and "not found" in parsed.get("error", ""):
-            pods = _helm_get("/kubectl/pods", {"namespace": namespace})
-            return json.dumps({
-                "warning": "'linkerd' CLI not found; showing kubectl pod status as a fallback.",
-                "namespace": namespace,
-                "pods": pods,
-            }, indent=4)
-    except (json.JSONDecodeError, ValueError):
-        pass
-    return result
+    return _run(*args, timeout=CLI_TIMEOUT)

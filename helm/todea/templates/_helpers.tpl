@@ -36,10 +36,6 @@ Create component specific fullnames.
 {{- include "todea.componentName" (dict "root" . "component" "mcp") -}}
 {{- end -}}
 
-{{- define "todea.agentHub.name" -}}
-{{- include "todea.componentName" (dict "root" . "component" "agent-hub") -}}
-{{- end -}}
-
 {{- define "todea.ollamaHub.name" -}}
 {{- include "todea.componentName" (dict "root" . "component" "ollama-hub") -}}
 {{- end -}}
@@ -87,9 +83,9 @@ app.kubernetes.io/component: web
 app.kubernetes.io/component: mcp
 {{- end -}}
 
-{{- define "todea.agentHub.selectorLabels" -}}
+{{- define "todea.googleHub.selectorLabels" -}}
 {{ include "todea.selectorLabels" . }}
-app.kubernetes.io/component: agent-hub
+app.kubernetes.io/component: google-hub
 {{- end -}}
 
 {{- define "todea.ollamaHub.selectorLabels" -}}
@@ -121,8 +117,34 @@ app.kubernetes.io/component: helm-agent
 app.kubernetes.io/component: training-hub
 {{- end -}}
 
+{{- define "todea.azureHub.name" -}}
+{{- include "todea.componentName" (dict "root" . "component" "azure-hub") -}}
+{{- end -}}
+
+{{- define "todea.azureHub.selectorLabels" -}}
+{{ include "todea.selectorLabels" . }}
+app.kubernetes.io/component: azure-hub
+{{- end -}}
+
 {{- define "todea.mcp.secretName" -}}
 {{- printf "%s-secret" (include "todea.mcp.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "todea.googleHub.secretName" -}}
+{{- printf "%s-secret" (include "todea.googleHub.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "todea.azureHub.secretName" -}}
+{{- printf "%s-secret" (include "todea.azureHub.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "todea.agentHub.name" -}}
+{{- include "todea.componentName" (dict "root" . "component" "agent-hub") -}}
+{{- end -}}
+
+{{- define "todea.agentHub.selectorLabels" -}}
+{{ include "todea.selectorLabels" . }}
+app.kubernetes.io/component: agent-hub
 {{- end -}}
 
 {{- define "todea.agentHub.secretName" -}}

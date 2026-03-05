@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /Users/gtrekter/Repositories/Todea-Assistant/helm/todea/templates/hub-*)"
+    ]
+  }
+}

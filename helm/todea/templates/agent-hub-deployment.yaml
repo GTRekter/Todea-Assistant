@@ -16,6 +16,7 @@ spec:
       labels:
         {{- include "todea.agentHub.selectorLabels" . | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "todea.agentHub.name" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -28,20 +29,17 @@ spec:
             - name: http
               containerPort: {{ .Values.agentHub.service.port }}
               protocol: TCP
+          # API keys and provider-specific config are stored in the todea-api-keys
+          # secret (managed via the settings page) and injected as env vars here.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.agentHub.apiKeysSecretName }}
+                optional: true
           env:
             - name: MCP_SERVER_URL
               value: {{ printf "http://%s:%d/mcp" (include "todea.mcp.name" .) (int .Values.mcp.service.port) | quote }}
             - name: CONVERSATION_HUB_URL
               value: {{ printf "http://%s:%d" (include "todea.conversationHub.name" .) (int .Values.conversationHub.service.port) | quote }}
-            - name: AGENT_MODEL_GOOGLE
-              value: {{ .Values.agentHub.agentModel | quote }}
-            {{- if and .Values.agentHub.googleApiKey .Values.agentHub.enabled }}
-            - name: GOOGLE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "todea.agentHub.secretName" . }}
-                  key: google-api-key
-            {{- end }}
             {{- range $key, $value := .Values.agentHub.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}

@@ -37,17 +37,7 @@ spec:
                 port:
                   number: {{ $.Values.mcp.service.port }}
           {{- end }}
-          {{- if $.Values.ollamaHub.enabled }}
-          {{- range list "/chat" "/models" "/conversations" "/settings" "/healthz" }}
-          - path: {{ . }}
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "todea.ollamaHub.name" $ }}
-                port:
-                  number: {{ $.Values.ollamaHub.service.port }}
-          {{- end }}
-          {{- else if $.Values.agentHub.enabled }}
+          {{- if $.Values.agentHub.enabled }}
           {{- range list "/chat" "/models" "/conversations" "/settings" "/healthz" }}
           - path: {{ . }}
             pathType: Prefix
