@@ -1,63 +1,30 @@
-from typing import Callable, List
+"""
+Linkerd Agent — HTTP wrapper around Buoyant Enterprise Linkerd operations.
+"""
 
-from google.adk.agents import Agent
-from google.adk.tools.agent_tool import AgentTool
-from google.adk.tools.mcp_tool import MCPToolset, StreamableHTTPConnectionParams
+from __future__ import annotations
 
-from .config import MODEL_NAME, MCP_SERVER_URL
-from .instructions import linkerd_agent_instruction
-from .tools import (
-    helm_search_bel_versions,
-    helm_repo_add,
-    install_gateway_api_crds,
-    install_linkerd_control_plane,
-    helm_configure_linkerd,
-    helm_install_linkerd_crds,
-    helm_install_linkerd_control_plane,
-    helm_upgrade_linkerd,
-    helm_uninstall_linkerd,
-    helm_status,
-    linkerd_check,
-)
-from openssl_agent.tools import (  # type: ignore
-    generate_certificates,
-    inspect_certificate,
-    verify_certificate_chain,
-)
-from kubernetes_agent.app import kubernetes_agent  # type: ignore
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-LINKERD_TOOLS: List[Callable] = [
-    helm_search_bel_versions,
-    helm_repo_add,
-    install_gateway_api_crds,
-    install_linkerd_control_plane,
-    helm_configure_linkerd,
-    helm_install_linkerd_crds,
-    helm_install_linkerd_control_plane,
-    helm_upgrade_linkerd,
-    helm_uninstall_linkerd,
-    helm_status,
-    linkerd_check,
-    generate_certificates,
-    inspect_certificate,
-    verify_certificate_chain,
-]
+from config import ALLOW_ORIGINS, PORT
+from routes.health import router as health_router
+from routes.linkerd import router as linkerd_router
+from routes.certificates import router as certificates_router
 
-LINKERD_TOOL_NAMES = [tool.__name__ for tool in LINKERD_TOOLS]
-
-tool_set = MCPToolset(
-    connection_params=StreamableHTTPConnectionParams(
-        url=f"{MCP_SERVER_URL.rstrip('/')}/mcp"
-    ),
-    tool_filter=LINKERD_TOOL_NAMES,
+app = FastAPI(title="Linkerd Agent")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOW_ORIGINS or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-linkerd_agent = Agent(
-    name="linkerd_agent",
-    model=MODEL_NAME,
-    description="Install and manage Buoyant Enterprise Linkerd (BEL) on a Kubernetes cluster using Helm.",
-    instruction=linkerd_agent_instruction,
-    tools=[tool_set, AgentTool(agent=kubernetes_agent)],
-)
+app.include_router(health_router)
+app.include_router(linkerd_router)
+app.include_router(certificates_router)
 
-root_agent = linkerd_agent
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

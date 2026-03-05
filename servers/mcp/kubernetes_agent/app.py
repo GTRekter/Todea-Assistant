@@ -1,37 +1,28 @@
-from google.adk.agents import Agent
+"""
+Kubernetes Agent — HTTP wrapper around kubectl diagnostics.
+"""
 
-from .config import MODEL_NAME
-from .instructions import kubernetes_agent_instruction
-from .tools import (
-    get_namespaces,
-    get_nodes,
-    get_pods,
-    get_deployments,
-    get_pod_containers,
-    get_pod_logs,
-    describe_pod,
-    get_events,
-    diagnose_pod_restarts,
+from __future__ import annotations
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from config import ALLOW_ORIGINS, PORT
+from routes.health import router as health_router
+from routes.kubernetes import router as kubernetes_router
+
+app = FastAPI(title="Kubernetes Agent")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOW_ORIGINS or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-kubernetes_agent = Agent(
-    name="kubernetes_agent",
-    model=MODEL_NAME,
-    description=(
-        "Diagnose Kubernetes workload issues: pod crashes, CrashLoopBackOff, "
-        "restart storms, liveness/readiness probe failures, OOMKills, and log analysis. "
-        "Call this agent when you need to inspect pods, deployments, events, or logs."
-    ),
-    instruction=kubernetes_agent_instruction,
-    tools=[
-        get_namespaces,
-        get_nodes,
-        get_pods,
-        get_deployments,
-        get_pod_containers,
-        get_pod_logs,
-        describe_pod,
-        get_events,
-        diagnose_pod_restarts,
-    ],
-)
+app.include_router(health_router)
+app.include_router(kubernetes_router)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

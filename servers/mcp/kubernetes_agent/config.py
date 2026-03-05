@@ -3,8 +3,5 @@ from __future__ import annotations
 
 import os
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-MODEL_NAME: str = os.getenv("AGENT_MODEL", "gemini-2.0-flash")
+PORT: int = int(os.getenv("PORT", "3700"))
+ALLOW_ORIGINS: list[str] = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",") if o.strip()]

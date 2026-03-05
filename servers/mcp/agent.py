@@ -2,19 +2,102 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Optional
 
+from dotenv import load_dotenv
+from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
 
 from config import AGENT_APP_NAME, AGENT_SESSION_ID, AGENT_USER_ID
-from linkerd_agent.app import root_agent as linkerd_agent  # type: ignore
+from kubernetes_agent.instructions import kubernetes_agent_instruction  # type: ignore
+from kubernetes_agent.tools import (  # type: ignore
+    describe_pod,
+    diagnose_pod_restarts,
+    get_deployments,
+    get_events,
+    get_namespaces,
+    get_nodes,
+    get_pod_containers,
+    get_pod_logs,
+    get_pods,
+)
+from linkerd_agent.instructions import linkerd_agent_instruction  # type: ignore
+from linkerd_agent.tools import (  # type: ignore
+    helm_configure_linkerd,
+    helm_install_linkerd_control_plane,
+    helm_install_linkerd_crds,
+    helm_repo_add,
+    helm_search_bel_versions,
+    helm_status,
+    helm_uninstall_linkerd,
+    helm_upgrade_linkerd,
+    install_gateway_api_crds,
+    install_linkerd_control_plane,
+    linkerd_check,
+)
+from openssl_agent.tools import (  # type: ignore
+    generate_certificates,
+    inspect_certificate,
+    verify_certificate_chain,
+)
+
+load_dotenv()
+_MODEL_NAME = os.getenv("AGENT_MODEL", "gemini-2.0-flash")
+
+_kubernetes_agent = Agent(
+    name="kubernetes_agent",
+    model=_MODEL_NAME,
+    description=(
+        "Diagnose Kubernetes workload issues: pod crashes, CrashLoopBackOff, "
+        "restart storms, liveness/readiness probe failures, OOMKills, and log analysis. "
+        "Call this agent when you need to inspect pods, deployments, events, or logs."
+    ),
+    instruction=kubernetes_agent_instruction,
+    tools=[
+        get_namespaces,
+        get_nodes,
+        get_pods,
+        get_deployments,
+        get_pod_containers,
+        get_pod_logs,
+        describe_pod,
+        get_events,
+        diagnose_pod_restarts,
+    ],
+)
+
+root_agent = Agent(
+    name="linkerd_agent",
+    model=_MODEL_NAME,
+    description="Install and manage Buoyant Enterprise Linkerd (BEL) on a Kubernetes cluster using Helm.",
+    instruction=linkerd_agent_instruction,
+    tools=[
+        helm_repo_add,
+        helm_search_bel_versions,
+        install_gateway_api_crds,
+        install_linkerd_control_plane,
+        helm_install_linkerd_crds,
+        helm_install_linkerd_control_plane,
+        helm_upgrade_linkerd,
+        helm_configure_linkerd,
+        helm_uninstall_linkerd,
+        helm_status,
+        linkerd_check,
+        generate_certificates,
+        inspect_certificate,
+        verify_certificate_chain,
+        AgentTool(agent=_kubernetes_agent),
+    ],
+)
 
 session_service = InMemorySessionService()
 runner = Runner(
     app_name=AGENT_APP_NAME,
-    agent=linkerd_agent,
+    agent=root_agent,
     session_service=session_service,
 )
 agent_lock = asyncio.Lock()
