@@ -3,7 +3,7 @@ uvicorn
 python-dotenv
 httpx
 # Google
-google-adk
+google-genai
 # Ollama
 ollama==0.6.1
 # Azure

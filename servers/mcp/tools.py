@@ -1,12 +1,26 @@
 """Register all MCP tools and expose the configured FastMCP instance."""
 from __future__ import annotations
 
-from typing import Optional
-
 from fastmcp import FastMCP
 
-from agent import agent_lock, run_agent_chat
-from config import AGENT_SESSION_ID, MCP_NAME
+from config import MCP_NAME
+from github_agent.tools import (  # type: ignore
+    github_get_file,
+    github_get_issue,
+    github_get_pr,
+    github_list_directory,
+    github_search_code,
+)
+from helm_agent.mcp_tools import (  # type: ignore
+    helm_generic_list,
+    helm_generic_repo_add,
+    helm_generic_search,
+    helm_generic_status,
+    helm_generic_uninstall,
+    helm_generic_upgrade_install,
+    kubectl_apply,
+    kubectl_pods,
+)
 from kubernetes_agent.tools import (  # type: ignore
     describe_pod,
     diagnose_pod_restarts,
@@ -23,6 +37,7 @@ from linkerd_agent.tools import (  # type: ignore
     helm_install_linkerd_control_plane,
     helm_install_linkerd_crds,
     helm_repo_add as linkerd_helm_repo_add,
+    helm_search_bel_versions,
     helm_status as linkerd_helm_status,
     helm_uninstall_linkerd,
     helm_upgrade_linkerd,
@@ -38,29 +53,12 @@ from openssl_agent.tools import (  # type: ignore
 
 mcp = FastMCP(MCP_NAME)
 
-
-@mcp.tool
-async def chat(message: str, session_id: Optional[str] = None) -> str:
-    """
-    Route chat requests through the Gemini agent so it thinks before calling tools.
-
-    The session id is optional; when omitted, a shared in-memory session is used.
-    """
-    message = message.strip()
-    if not message:
-        raise ValueError("A message is required.")
-
-    resolved_session = (session_id or AGENT_SESSION_ID).strip() or AGENT_SESSION_ID
-    async with agent_lock:
-        return await run_agent_chat(message, resolved_session)
-
-
-# Linkerd tools
+# Linkerd / BEL tools
 for _fn in (
-    linkerd_helm_repo_add, install_gateway_api_crds, install_linkerd_control_plane,
-    helm_install_linkerd_crds, helm_install_linkerd_control_plane,
-    helm_upgrade_linkerd, helm_configure_linkerd, helm_uninstall_linkerd,
-    linkerd_helm_status, linkerd_check,
+    linkerd_helm_repo_add, helm_search_bel_versions, install_gateway_api_crds,
+    install_linkerd_control_plane, helm_install_linkerd_crds,
+    helm_install_linkerd_control_plane, helm_upgrade_linkerd, helm_configure_linkerd,
+    helm_uninstall_linkerd, linkerd_helm_status, linkerd_check,
 ):
     mcp.tool(_fn)
 
@@ -73,5 +71,20 @@ for _fn in (
     get_namespaces, get_nodes, get_pods, get_deployments,
     get_pod_containers, get_pod_logs, describe_pod, get_events,
     diagnose_pod_restarts,
+):
+    mcp.tool(_fn)
+
+# GitHub tools
+for _fn in (
+    github_get_file, github_list_directory, github_search_code,
+    github_get_issue, github_get_pr,
+):
+    mcp.tool(_fn)
+
+# Generic Helm / kubectl tools
+for _fn in (
+    helm_generic_repo_add, helm_generic_search, helm_generic_upgrade_install,
+    helm_generic_status, helm_generic_list, helm_generic_uninstall,
+    kubectl_apply, kubectl_pods,
 ):
     mcp.tool(_fn)

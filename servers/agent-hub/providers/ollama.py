@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from config import DEFAULT_INSTRUCTION, MAX_TOOL_ITERATIONS
 from conv_client import conv_client
 from mcp_utils import _call_mcp_tool, _list_mcp_tools
+from sub_agent import run_sub_agent
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +261,11 @@ async def stream_ollama_chat(message: str, session_id: str, model: str) -> Async
             fn_args = _strip_invalid_args(resolved, fn_args or {}, tools_for_ollama)
             yield {"type": "tool_call", "name": resolved, "args": fn_args}
             try:
-                tool_result = await _call_mcp_tool(resolved, fn_args)
+                if resolved.startswith("call_") and resolved.endswith("_agent"):
+                    agent_name = resolved[len("call_"):]
+                    tool_result = await run_sub_agent(agent_name, fn_args.get("task", ""), "ollama", model)
+                else:
+                    tool_result = await _call_mcp_tool(resolved, fn_args)
             except Exception as exc:
                 tool_result = f"Tool '{resolved}' error: {exc}"
             yield {"type": "tool_result", "name": resolved, "content": tool_result}

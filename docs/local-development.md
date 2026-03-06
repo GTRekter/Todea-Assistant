@@ -104,32 +104,91 @@ Key endpoints:
 
 ---
 
+## Kubernetes Agent (`servers/mcp/kubernetes_agent`)
+
+Requires `kubectl` installed and configured to reach a cluster.
+
+```bash
+cd servers/mcp/kubernetes_agent
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python3 app.py
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3700` | Port to listen on |
+| `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
+
+Key endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `GET /kubernetes/namespaces` | List all namespaces |
+| `GET /kubernetes/nodes` | List nodes with status and version |
+| `GET /kubernetes/pods?namespace=` | List pods; cluster-wide when omitted |
+| `GET /kubernetes/pods/{pod}/logs?namespace=&container=&previous=&tail_lines=` | Fetch logs |
+| `GET /kubernetes/pods/{pod}/diagnose?namespace=` | Composite crash diagnostic |
+| `GET /healthz` | Health check |
+
+---
+
+## Linkerd Agent (`servers/mcp/linkerd_agent`)
+
+Requires the Helm Agent running. The `linkerd` CLI is optional — `linkerd_check` falls back gracefully when absent.
+
+> **Note:** The Linkerd Agent imports `openssl_agent.tools`. When running locally outside Docker, set `PYTHONPATH` so the `openssl_agent` package is importable:
+
+```bash
+cd servers/mcp
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r linkerd_agent/requirements.txt -r openssl_agent/requirements.txt
+PYTHONPATH=. PORT=3800 python3 linkerd_agent/app.py
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3800` | Port to listen on |
+| `HELM_AGENT_URL` | `http://localhost:3400` | Helm Agent base URL |
+| `ALLOW_ORIGINS` | `*` | Comma-separated CORS origins |
+
+Key endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `GET  /linkerd/versions?minor=` | List available BEL chart versions |
+| `POST /linkerd/repo/add` | Register the Buoyant Helm repository |
+| `POST /linkerd/control-plane/install` | Generate certs + install control plane (composite) |
+| `POST /linkerd/upgrade` | Upgrade CRDs and control plane |
+| `GET  /linkerd/status?release=&namespace=` | Helm release status |
+| `GET  /linkerd/check?proxy=&namespace=` | Run `linkerd check` |
+| `POST /certificates/generate` | Generate trust anchor + issuer cert pair |
+| `GET  /healthz` | Health check |
+
+---
+
 ## MCP agent server (`servers/mcp`)
 
-Start the **Helm Agent** first (see above). `kubectl` must be on `$PATH` and configured to reach a cluster for the `kubernetes_agent` diagnostic tools. The `linkerd` CLI is optional — `linkerd_check` falls back to `kubectl get pods` when absent. Certificate generation uses the Python `cryptography` library — no external binary required.
+Start the **Helm Agent**, **Kubernetes Agent**, and **Linkerd Agent** first. `kubectl` must be on `$PATH` and configured to reach a cluster.
 
 ```bash
 cd servers/mcp
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python3 server.py
+python3 app.py
 ```
 
 | Variable | Default | Description |
 |---|---|---|
-| `GOOGLE_API_KEY` | _(optional)_ | Google GenAI API key — only required for the `chat` tool (Gemini routing); all other tools work without it |
 | `MCP_PORT` | `3002` | Port to listen on |
-| `AGENT_MODEL` | `gemini-2.0-flash` | Gemini model for ADK agents |
 | `MCP_ALLOW_ORIGINS` | `http://localhost:3000` | Comma-separated CORS origins |
-| `HELM_AGENT_URL` | `http://localhost:3400` | Helm Agent base URL |
+| `HELM_AGENT_URL` | `http://localhost:3400` | Helm Agent base URL (used by `linkerd_agent.tools`) |
 
-To exercise the agent interactively:
+The MCP server exposes two endpoints:
+- `GET /mcp` — FastMCP protocol endpoint (all raw tools)
+- `GET /agents` — JSON list of sub-agent configs (name, instructions, tool list); consumed by the Agent Hub at runtime
 
-```bash
-adk web   # opens the Google ADK web harness
-```
-
-Try: "Install Linkerd 2.19", "What version of Linkerd is running?", "Why are the identity pods restarting?"
+No LLM API key is required to run the MCP server. All orchestration logic lives in the Agent Hub.
 
 ---
 
@@ -153,7 +212,7 @@ uvicorn app:app --port 3300
 
 ## Agent Hub (`servers/agent-hub`)
 
-Unified LLM gateway — routes requests to Google (Gemini/ADK), Azure OpenAI, or Ollama based on the `provider` field sent by the UI. Only the providers whose credentials are set will be available in the model dropdown.
+Unified LLM gateway — routes requests to Google (Gemini), Azure OpenAI, or Ollama based on the `provider` field sent by the UI. Runs the root dispatcher agent and all sub-agent loops. Only the providers whose credentials are set will be available in the model dropdown.
 
 ```bash
 cd servers/agent-hub

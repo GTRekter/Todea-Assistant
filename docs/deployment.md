@@ -15,6 +15,11 @@ docker build -t todea-web:local               ./web
 docker build -t todea-mcp:local               ./servers/mcp
 docker build -t todea-agent-hub:local         ./servers/agent-hub
 docker build -t todea-helm-agent:local        ./servers/mcp/helm_agent
+docker build -t todea-openssl-agent:local     ./servers/mcp/openssl_agent
+docker build -t todea-github-agent:local      ./servers/mcp/github_agent
+docker build -t todea-kubernetes-agent:local  ./servers/mcp/kubernetes_agent
+# Linkerd Agent must be built from servers/mcp/ (needs openssl_agent package):
+docker build -t todea-linkerd-agent:local  -f ./servers/mcp/linkerd_agent/Dockerfile  ./servers/mcp
 docker build -t todea-conversation-hub:local  ./servers/conversation-hub
 docker build -t todea-training-hub:local      ./servers/training-hub
 docker build -t todea-scraper:local  -f ./servers/training-hub/Dockerfile.scraper  ./servers/training-hub
@@ -25,6 +30,10 @@ k3d image import --cluster todea \
   todea-mcp:local \
   todea-agent-hub:local \
   todea-helm-agent:local \
+  todea-openssl-agent:local \
+  todea-github-agent:local \
+  todea-kubernetes-agent:local \
+  todea-linkerd-agent:local \
   todea-conversation-hub:local \
   todea-training-hub:local \
   todea-scraper:local \
@@ -134,6 +143,16 @@ kubectl rollout restart deployment/todea-mcp -n todea
 docker build -t todea-helm-agent:local ./servers/mcp/helm_agent
 k3d image import todea-helm-agent:local -c todea
 kubectl rollout restart deployment/todea-helm-agent -n todea
+
+# Kubernetes agent
+docker build -t todea-kubernetes-agent:local ./servers/mcp/kubernetes_agent
+k3d image import todea-kubernetes-agent:local -c todea
+kubectl rollout restart deployment/todea-kubernetes-agent -n todea
+
+# Linkerd agent (must be built from servers/mcp/ for the openssl_agent package)
+docker build -t todea-linkerd-agent:local -f ./servers/mcp/linkerd_agent/Dockerfile ./servers/mcp
+k3d image import todea-linkerd-agent:local -c todea
+kubectl rollout restart deployment/todea-linkerd-agent -n todea
 
 # Training Hub
 docker build -t todea-training-hub:local ./servers/training-hub

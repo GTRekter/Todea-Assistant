@@ -7,6 +7,7 @@ import {
     faPlus,
     faTrash,
     faPen,
+    faStop,
 } from '@fortawesome/free-solid-svg-icons';
 import './chat.css';
 import {
@@ -81,6 +82,7 @@ export default function Chat() {
 
     const scrollAnchorRef = useRef(null);
     const modelDropdownRef = useRef(null);
+    const abortControllerRef = useRef(null);
 
     const activeConversation = useMemo(
         () => conversations.find((c) => c.id === activeConversationId) || null,
@@ -298,6 +300,9 @@ export default function Chat() {
                 };
             });
 
+            const abortController = new AbortController();
+            abortControllerRef.current = abortController;
+
             try {
                 const steps = [];
                 await streamChatRequest({
@@ -305,6 +310,7 @@ export default function Chat() {
                     provider: selectedModel?.provider,
                     sessionId: conversationId,
                     model: selectedModel?.id,
+                    signal: abortController.signal,
                     onEvent: (event) => {
                         if (event.type === 'done') {
                             setMessagesByConversation((prev) => {
@@ -336,17 +342,29 @@ export default function Chat() {
                     },
                 });
             } catch (error) {
-                console.error('Failed to process chat request', error);
-                const message = error instanceof Error ? error.message : String(error);
-                setMessagesByConversation((prev) => {
-                    const updated = (prev[conversationId] || []).map((m) =>
-                        m.id === placeholderId
-                            ? { ...m, content: `Error: ${message}`, placeholder: false }
-                            : m
-                    );
-                    return { ...prev, [conversationId]: updated };
-                });
+                if (error?.name === 'AbortError') {
+                    setMessagesByConversation((prev) => {
+                        const updated = (prev[conversationId] || []).map((m) =>
+                            m.id === placeholderId
+                                ? { ...m, content: 'Stopped.', placeholder: false }
+                                : m
+                        );
+                        return { ...prev, [conversationId]: updated };
+                    });
+                } else {
+                    console.error('Failed to process chat request', error);
+                    const message = error instanceof Error ? error.message : String(error);
+                    setMessagesByConversation((prev) => {
+                        const updated = (prev[conversationId] || []).map((m) =>
+                            m.id === placeholderId
+                                ? { ...m, content: `Error: ${message}`, placeholder: false }
+                                : m
+                        );
+                        return { ...prev, [conversationId]: updated };
+                    });
+                }
             } finally {
+                abortControllerRef.current = null;
                 setIsSending(false);
                 setConversations((prev) => {
                     const now = Date.now() / 1000;
@@ -396,6 +414,10 @@ export default function Chat() {
         } catch (err) {
             console.error('Failed to create conversation', err);
         }
+    };
+
+    const handleStop = () => {
+        abortControllerRef.current?.abort();
     };
 
     const isReady = models.length > 0 && !!selectedModel && !!activeConversationId;
@@ -559,6 +581,16 @@ export default function Chat() {
                             />
                         </div>
                         <div className="d-flex flex-wrap justify-content-end align-items-center gap-2">
+                            {isSending && (
+                                <button
+                                    type="button"
+                                    className="btn btn-outline-danger rounded-circle d-flex align-items-center justify-content-center chat-btn"
+                                    onClick={handleStop}
+                                    aria-label="Stop"
+                                >
+                                    <FontAwesomeIcon icon={faStop} />
+                                </button>
+                            )}
                             <button
                                 type="submit"
                                 className="btn btn-primary rounded-circle d-flex align-items-center justify-content-center chat-btn"

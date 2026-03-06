@@ -68,6 +68,8 @@
 .chat-message-bubble {
     max-width: 75%;
     border-radius: 13px;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .chat-bubble-user {

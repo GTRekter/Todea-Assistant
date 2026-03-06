@@ -15,9 +15,6 @@ MCP_ALLOW_ORIGINS = [
     if origin.strip()
 ]
 
-AGENT_APP_NAME = os.getenv("MCP_AGENT_APP_NAME", "todea-mcp-agent")
-AGENT_USER_ID = os.getenv("MCP_AGENT_USER_ID", "web-ui")
-AGENT_SESSION_ID = os.getenv("MCP_AGENT_SESSION_ID", "web-session")
 
 middleware = [
     Middleware(

@@ -31,7 +31,7 @@ k3d uses the `local-path` storage class by default, which works out of the box.
 
 ### Live streaming output
 
-The Ollama Hub exposes `POST /chat/stream` as a Server-Sent Events endpoint. As the model reasons and calls tools, the UI receives and renders each step in real time before the final answer arrives:
+The Agent Hub exposes `POST /chat/stream` as a Server-Sent Events endpoint. As the model reasons and calls tools, the UI receives and renders each step in real time before the final answer arrives:
 
 | Event type | What it represents |
 |---|---|
@@ -84,7 +84,7 @@ helm upgrade todea ./helm/todea -n todea --reuse-values \
 
 ## Tool-calling behaviour
 
-The Ollama Hub fetches the MCP tool list at startup and makes it available to the Ollama model. To work reliably with smaller local models (llama3.1:8b), it applies several layers of robustness:
+The Agent Hub fetches the tool list at startup and presents it to the Ollama model. The root agent sees only 5 virtual tools (`call_*_agent`); sub-agent loops receive only the MCP tools owned by that sub-agent. To work reliably with smaller local models (llama3.1:8b), the hub applies several layers of robustness:
 
 ### 3-tier tool-call extraction
 
@@ -102,10 +102,6 @@ Before every MCP tool call, any argument key not present in the tool's JSON Sche
 
 Hallucinated tool names are matched against known tools by substring and token-overlap scoring before the call is rejected.
 
-### Excluded tools
-
-The `chat` MCP tool (which requires a Google API key for Gemini routing) is hidden from Ollama's tool list so the model never attempts to call it.
-
 ### Model recommendations
 
 | Model | Tool use reliability |
@@ -115,7 +111,7 @@ The `chat` MCP tool (which requires a Google API key for Gemini routing) is hidd
 
 ### Debugging
 
-When the model outputs tool calls as text but they don't execute, check the Ollama Hub server logs for:
+When the model outputs tool calls as text but they don't execute, check the Agent Hub server logs for:
 
 | Log message | Meaning |
 |---|---|

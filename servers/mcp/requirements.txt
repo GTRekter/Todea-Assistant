@@ -1,6 +1,6 @@
 cryptography
-fastmcp
-google-adk
+fastmcp>=2.0.0
 httpx
 python-dotenv
+starlette
 uvicorn

@@ -15,7 +15,7 @@ export async function getModels() {
 // Chat
 // ---------------------------------------------------------------------------
 
-export async function streamChatRequest({ message, provider, sessionId, model, onEvent }) {
+export async function streamChatRequest({ message, provider, sessionId, model, onEvent, signal }) {
     const trimmed = (message || '').trim();
     if (!trimmed) throw new Error('A message is required.');
 
@@ -28,6 +28,7 @@ export async function streamChatRequest({ message, provider, sessionId, model, o
             session_id: sessionId || undefined,
             model: model || undefined,
         }),
+        signal,
     });
 
     if (!response.ok) {

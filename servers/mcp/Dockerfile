@@ -27,13 +27,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py ./app.py
 COPY config.py ./config.py
-COPY agent.py ./agent.py
 COPY tools.py ./tools.py
 COPY http_utils.py ./http_utils.py
 COPY linkerd_agent ./linkerd_agent
 COPY openssl_agent ./openssl_agent
 COPY kubernetes_agent ./kubernetes_agent
 COPY github_agent ./github_agent
+COPY helm_agent ./helm_agent
 
 ENV MCP_PORT=3002
 

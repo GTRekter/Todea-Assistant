@@ -1,17 +1,20 @@
-"""Google ADK provider — configuration, session management, and streaming chat."""
+"""Google GenAI provider — direct API, model-agnostic tool calling."""
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import os
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-from config import DEFAULT_INSTRUCTION, GOOGLE_MODEL, MCP_SERVER_URL
+from config import DEFAULT_INSTRUCTION, MAX_TOOL_ITERATIONS
+from conv_client import conv_client
+from mcp_utils import _call_mcp_tool, _list_mcp_tools
+from sub_agent import run_sub_agent
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Configuration globals (may be updated by kubernetes._refresh_provider_config_from_secret)
+# Configuration
 # ---------------------------------------------------------------------------
 
 GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY")
@@ -26,125 +29,174 @@ GOOGLE_MODELS = [
     "gemini-1.5-pro",
     "gemini-1.5-flash",
 ]
+GOOGLE_MODEL: str = os.getenv("GOOGLE_MODEL", "gemini-2.0-flash")
 GOOGLE_ENABLED: bool = bool(GOOGLE_API_KEY or (GOOGLE_VERTEX_PROJECT and GOOGLE_VERTEX_LOCATION))
 
 try:
-    from google.adk.agents import Agent as GoogleAgent
-    from google.adk.runners import Runner as GoogleRunner
-    from google.adk.sessions.in_memory_session_service import InMemorySessionService as GoogleSessionService
-    from google.adk.tools.mcp_tool import MCPToolset as GoogleMCPToolset
-    from google.adk.tools.mcp_tool import StreamableHTTPConnectionParams as GoogleHTTPParams
-    from google.genai import types as GoogleTypes
+    from google import genai
+    from google.genai import types as gtypes
     _GOOGLE_LIBS = True
 except ImportError:
     _GOOGLE_LIBS = False
-    logger.warning("google-adk not installed; Google provider unavailable.")
+    logger.warning("google-genai not installed; Google provider unavailable.")
+
 
 # ---------------------------------------------------------------------------
-# Internal state
+# Client factory
 # ---------------------------------------------------------------------------
 
-_google_session_service: Optional[Any] = None
-_google_runners: Dict[str, Any] = {}
-_google_lock = asyncio.Lock()
-_GOOGLE_APP_NAME = "todea-google"
-
-
-def _build_google_agent(model: str) -> Any:
-    if not GOOGLE_ENABLED:
-        raise RuntimeError(
-            "Google credentials are missing. Set GOOGLE_API_KEY or configure GOOGLE_VERTEX_PROJECT/LOCATION."
-        )
-    tool_set = GoogleMCPToolset(
-        connection_params=GoogleHTTPParams(url=MCP_SERVER_URL.rstrip("/"))
-    )
-    return GoogleAgent(
-        name="google_agent",
-        model=model,
-        description="Google agent with MCP tools",
-        instruction=DEFAULT_INSTRUCTION,
-        tools=[tool_set],
+def _google_client() -> Any:
+    if not _GOOGLE_LIBS:
+        raise RuntimeError("google-genai library not installed.")
+    if GOOGLE_API_KEY:
+        return genai.Client(api_key=GOOGLE_API_KEY)
+    if GOOGLE_VERTEX_PROJECT and GOOGLE_VERTEX_LOCATION:
+        return genai.Client(vertexai=True, project=GOOGLE_VERTEX_PROJECT, location=GOOGLE_VERTEX_LOCATION)
+    raise RuntimeError(
+        "Google credentials missing. Set GOOGLE_API_KEY or GOOGLE_VERTEX_PROJECT/LOCATION."
     )
 
 
-def _get_google_runner(model: str) -> Any:
-    global _google_session_service, _google_runners
-    if _google_session_service is None:
-        _google_session_service = GoogleSessionService()
-    if model not in _google_runners:
-        _google_runners[model] = GoogleRunner(
-            app_name=_GOOGLE_APP_NAME,
-            agent=_build_google_agent(model),
-            session_service=_google_session_service,
+# ---------------------------------------------------------------------------
+# Tool format conversion
+# ---------------------------------------------------------------------------
+
+def _to_genai_tools(tools: List[Dict[str, Any]]) -> list:
+    """Convert OpenAI-style function tool defs to google.genai FunctionDeclaration list."""
+    declarations = []
+    for t in tools:
+        fn = t.get("function", {})
+        params = fn.get("parameters", {})
+        declarations.append(
+            gtypes.FunctionDeclaration(
+                name=fn["name"],
+                description=fn.get("description", ""),
+                parameters=gtypes.Schema(
+                    type=gtypes.Type.OBJECT,
+                    properties={
+                        k: gtypes.Schema(
+                            type=gtypes.Type.STRING,
+                            description=v.get("description", ""),
+                        )
+                        for k, v in params.get("properties", {}).items()
+                    },
+                    required=params.get("required", []),
+                ),
+            )
         )
-    return _google_runners[model]
+    return [gtypes.Tool(function_declarations=declarations)] if declarations else []
 
 
-async def _ensure_google_session(session_id: str) -> None:
-    existing = await _google_session_service.get_session(
-        app_name=_GOOGLE_APP_NAME, user_id="web-ui", session_id=session_id
-    )
-    if not existing:
-        await _google_session_service.create_session(
-            app_name=_GOOGLE_APP_NAME, user_id="web-ui", session_id=session_id
-        )
+def _messages_to_contents(messages: List[Dict[str, Any]]) -> List[Any]:
+    """Convert OpenAI-style message list to google.genai Content objects (skip system)."""
+    contents = []
+    for m in messages:
+        role = m["role"]
+        text = m.get("content") or ""
+        if role == "system":
+            continue
+        if role in ("user", "tool"):
+            contents.append(gtypes.Content(role="user", parts=[gtypes.Part(text=text)]))
+        elif role == "assistant":
+            contents.append(gtypes.Content(role="model", parts=[gtypes.Part(text=text)]))
+    return contents
 
 
-def _google_content_to_text(content: Optional[Any]) -> str:
-    if not content:
-        return ""
-    parts = []
-    for part in (content.parts or []):
-        if getattr(part, "text", None):
-            parts.append(part.text)
-        elif getattr(part, "function_call", None):
-            parts.append(f"[function call] {part.function_call.name}")
-        elif getattr(part, "function_response", None):
-            fn = part.function_response
-            parts.append(f"[function response] {fn.name}: {fn.response}")
-        elif getattr(part, "code_execution_result", None):
-            result = part.code_execution_result
-            output = getattr(result, "output", None) or getattr(result, "stdout", None)
-            if output:
-                parts.append(str(output))
-    return "\n".join(p for p in parts if p) or (getattr(content, "text", "") or "")
-
+# ---------------------------------------------------------------------------
+# Streaming chat
+# ---------------------------------------------------------------------------
 
 async def stream_google_chat(message: str, session_id: str, model: str) -> AsyncIterator[Dict[str, Any]]:
     if not _GOOGLE_LIBS:
-        yield {"type": "error", "content": "google-adk library not installed."}
+        yield {"type": "error", "content": "google-genai library not installed."}
         return
+
     try:
-        runner = _get_google_runner(model)
+        client = _google_client()
     except RuntimeError as exc:
         yield {"type": "error", "content": str(exc)}
         return
 
-    await _ensure_google_session(session_id)
-    final_response = ""
-    user_message = GoogleTypes.Content(role="user", parts=[GoogleTypes.Part(text=message)])
+    history = await conv_client.get_messages(session_id)
+    messages: List[Dict[str, Any]] = (
+        [{"role": "system", "content": DEFAULT_INSTRUCTION}]
+        + [{"role": m["role"], "content": m["content"]} for m in history]
+        + [{"role": "user", "content": message}]
+    )
 
+    tools = await _list_mcp_tools()
+    genai_tools = _to_genai_tools(tools)
+    system_instruction = DEFAULT_INSTRUCTION
+
+    for iteration in range(MAX_TOOL_ITERATIONS + 1):
+        contents = _messages_to_contents(messages)
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=gtypes.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    tools=genai_tools or None,
+                ),
+            )
+        except Exception as exc:
+            yield {"type": "error", "content": str(exc)}
+            return
+
+        candidate = response.candidates[0] if response.candidates else None
+        if not candidate or not candidate.content:
+            yield {"type": "done", "content": "No response from the model."}
+            return
+
+        parts = candidate.content.parts or []
+        text_parts = [p.text for p in parts if getattr(p, "text", None)]
+        fn_calls = [p.function_call for p in parts if getattr(p, "function_call", None)]
+
+        content_text = "\n".join(text_parts)
+        messages.append({"role": "assistant", "content": content_text})
+
+        if content_text:
+            if not fn_calls:
+                # No tool calls — this is the final response
+                yield {"type": "done", "content": content_text}
+                return
+            yield {"type": "thinking", "content": content_text}
+
+        if not fn_calls:
+            yield {"type": "done", "content": content_text or "No response from the model."}
+            return
+
+        if iteration == MAX_TOOL_ITERATIONS:
+            logger.warning("MAX_TOOL_ITERATIONS reached for session %s.", session_id)
+            break
+
+        for fc in fn_calls:
+            fn_name = fc.name
+            fn_args = dict(fc.args) if fc.args else {}
+            yield {"type": "tool_call", "name": fn_name, "args": fn_args}
+            try:
+                if fn_name.startswith("call_") and fn_name.endswith("_agent"):
+                    agent_name = fn_name[len("call_"):]
+                    tool_result = await run_sub_agent(agent_name, fn_args.get("task", ""), "google", model)
+                else:
+                    tool_result = await _call_mcp_tool(fn_name, fn_args)
+            except Exception as exc:
+                tool_result = f"Tool '{fn_name}' error: {exc}"
+            yield {"type": "tool_result", "name": fn_name, "content": tool_result}
+            messages.append({"role": "tool", "content": tool_result})
+
+    # Synthesis pass after iteration cap
+    contents = _messages_to_contents(messages)
     try:
-        async for event in runner.run_async(
-            user_id="web-ui", session_id=session_id, new_message=user_message
-        ):
-            if not event.content or not event.content.parts:
-                continue
-            for part in event.content.parts:
-                if getattr(part, "text", None):
-                    if event.is_final_response():
-                        final_response = part.text
-                    else:
-                        yield {"type": "thinking", "content": part.text}
-                elif getattr(part, "function_call", None):
-                    fc = part.function_call
-                    yield {"type": "tool_call", "name": fc.name, "args": dict(fc.args) if fc.args else {}}
-                elif getattr(part, "function_response", None):
-                    fr = part.function_response
-                    yield {"type": "tool_result", "name": fr.name, "content": str(fr.response) if fr.response is not None else ""}
+        final = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=gtypes.GenerateContentConfig(system_instruction=system_instruction),
+        )
+        final_parts = (final.candidates[0].content.parts or []) if final.candidates else []
+        final_text = "\n".join(p.text for p in final_parts if getattr(p, "text", None))
     except Exception as exc:
-        logger.warning("stream_google_chat error: %s", exc)
         yield {"type": "error", "content": str(exc)}
         return
 
-    yield {"type": "done", "content": final_response or "The agent did not return any text."}
+    yield {"type": "done", "content": final_text or "Agent completed tool execution but produced no summary."}

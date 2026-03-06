@@ -72,14 +72,17 @@ async def settings_status() -> Dict[str, Any]:
         _secret_key_present(secret_data, "AZURE_OPENAI_API_KEY")
         and _secret_key_present(secret_data, "AZURE_OPENAI_ENDPOINT")
     )
-    ollama_configured = ollama_provider._OLLAMA_LIBS and ollama_provider.OLLAMA_ENABLED
+    ollama_reachable = False
+    if ollama_provider._OLLAMA_LIBS and ollama_provider.OLLAMA_ENABLED:
+        models = await ollama_provider._list_ollama_models(force=True)
+        ollama_reachable = bool(models)
 
     return {
         "exists": secret_exists,
         "providers": {
             "google": google_configured,
             "azure": azure_configured,
-            "ollama": ollama_configured,
+            "ollama": ollama_reachable,
         },
     }
 

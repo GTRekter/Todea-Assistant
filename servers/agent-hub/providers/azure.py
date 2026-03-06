@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from config import DEFAULT_INSTRUCTION, MAX_TOOL_ITERATIONS
 from conv_client import conv_client
 from mcp_utils import _call_mcp_tool, _list_mcp_tools
+from sub_agent import run_sub_agent
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,11 @@ async def stream_azure_chat(message: str, session_id: str, model: str) -> AsyncI
             fn_args = json.loads(tc.function.arguments or "{}")
             yield {"type": "tool_call", "name": tc.function.name, "args": fn_args}
             try:
-                tool_result = await _call_mcp_tool(tc.function.name, fn_args)
+                if tc.function.name.startswith("call_") and tc.function.name.endswith("_agent"):
+                    agent_name = tc.function.name[len("call_"):]
+                    tool_result = await run_sub_agent(agent_name, fn_args.get("task", ""), "azure", model)
+                else:
+                    tool_result = await _call_mcp_tool(tc.function.name, fn_args)
             except Exception as exc:
                 tool_result = f"Tool '{tc.function.name}' error: {exc}"
             yield {"type": "tool_result", "name": tc.function.name, "content": tool_result}
